@@ -1,0 +1,582 @@
+#The NetBSD Network FAQ#  
+This page is developing, and we welcome any [comments or suggestions](http://www.NetBSD.org/cgi-bin/feedback.cgi).  
+  
+##Networking FAQ##
+###Getting started###
+The NetBSD install process includes basic network configuration, which implements a standard workstation setup. 
+This configuration can be extended to take advantage of NetBSD's many networking features. 
+  
+* See also:
+  * [RFC 1918](http://www.cis.ohio-state.edu/cgi-bin/rfc/rfc1918.html) - Address Allocation for Private Internets  
+
+
+###Network configuration files###
+The network configuration is defined in a set of text configuration files.  
+  
+
+* /etc/rc.conf - rc.conf(5) specifies system services, including the network services, to be automatically started at system initialisation.
+* /etc/hosts - hosts(5) the most basic hostname/IP map.
+* /etc/myname - the fully qualified hostname (unless set via hostname in /etc/rc.conf).
+* /etc/mygate - default gateway. Usually better put as defaultroute in /etc/rc.conf, or you can run routed(8).
+* /etc/ifconfig.
+{*IF*}. - the definition of network interface *IF*, used by /etc/rc.d/network at system initialisation, to configure a network interface. 
+See ifconfig.if(5). An alternative is setting ifconfig_IF="..." in /etc/rc.conf.
+* /etc/ifaliases - ifaliases.5 a single interface can be aliased to more than one IP number. The aliases are specified here, and used by /etc/rc.d/network at system initialisation.
+* /etc/resolv.conf - resolv.conf(5) specifies how to resolve IP numbers to their hostnames. 
+Most commonly, this contains a line specifying the domains to search and one or more IPs of the nameservers to query:
+  
+
+    search subdomain.yourdomain.tld yourdomain.tld
+    nameserver 192.168.253.10
+    nameserver 192.168.253.11  
+
+Beware, this file is overwritten by dhclient(8)!  
+
+
+See also:
+* hostname(7)  
+
+
+###Network configuration programs###
+Two important network configuration programs are used in the network startup script (/etc/rc.d/network), and can be used to manually configure an active network.  
+
+* ifconfig(8) - change or view the characteristics of a network interface.
+* route(8) - manipulate the network routing tables.  
+
+
+See also:  
+
+* domainname(1)
+* hostname(1), hostname(7)  
+
+
+###Adding a new host to the network###
+If your network is setup to use DHCP, all you need to do is set dhclient=yes in /etc/rc.conf, and the DHCP client will be started at boot time to automatically configure your machine's IP address, hostname, default router, nameservers and domainname used. 
+See [here](dhcp.html) for more information on DHCP.  
+  
+If no DHCP is available, the minimum software requirement for a host to be added to a network is a configured interface with an address on the local network. 
+If you provide network information during the NetBSD installation process, the new host can be immediately connected to the network and accessed by its IP number.  
+  
+The following is a simple example of how to configure networking, assuming that you have one `ex` network interface and want your IP to be 192.168.253.2, using a default route of 192.168.253.1:
+  
+    # ifconfig lo0 127.0.0.1
+    # ifconfig ex0 192.168.253.2 netmask 255.255.255.0
+    # route add default 192.168.253.1  
+  
+###Naming a new host on the network
+To allow access by hostname as well as by IP number, the new hostname
+and its IP number are added to the network configuration files. There
+are a number of ways to manage this;
+
+1. /etc/hosts: hosts(5) For small networks of a few hosts, the hostname/IP maps can be manually duplicated in the /etc/hosts files of each host.
+    192.168.1.2  host2.mydomain.org.au host2
+
+2. NIS (Network Information Service, formerly known as Yellow Pages or YP) enables the /etc/hosts files on the network to be automatically synchronised (along with other configuration files like passwd and group information). 
+See domainname(1), ypinit(8) and yp(8) as well as the ypbind and domainname variables in rc.conf(5) for more information.
+3. DNS: The hostname maps can be centralised into zone-files which are accessed by the name-server, named(8). (there are many documents at [www.dns.net](http://www.dns.net/dnsrd/docs/) dealing with setting up and maintaining DNS files).  
+*Forward zone file entry*
+    host2  IN A     192.168.1.2
+*Reverse zone file entry*
+    2      IN PTR   host2.mydomain.org.au.  
+
+
+See also:
+* named.conf(5)
+* nsswitch.conf(5)
+
+###Inter-networking###
+Connecting your network (which may consist of a single host) to another network requires that at least one host acts as a gateway between the two networks. The gateway host has two network interfaces - one configured for each network.
+
+* Create an interface configuration file (/etc/ifconfig.
+{*interface*}) for the second ethernet interface.
+* /etc/ifconfig.we1
+    192.168.2.30 netmask 0xffffff00 media 10base2/BNC
+As an alternative, put the following line into /etc/rc.conf:
+    ifconfig_we1="192.168.2.30 netmask 0xffffff00 media 10base2/BNC"
+
+* Reboot your computer to activate the new interface.
+* If needed, enable IP packet forwarding.  You can either compile a kernel with `options GATEWAY`, or you can
+**sysctl -w net.inet.ip.forwarding=1** each time your machine boots, or put **net.inet.ip.forwarding=1** into /etc/sysctl.conf. 
+
+
+See also:
+* ipnat(5),ipnat(8)
+* ipf.conf(5),ipf(8)
+* sysctl.conf(5),sysctl(8)
+
+###Inter-networking with PPP###
+A special type of network interface can be created on a serial port (with or without a modem attached) using pppd(8).  
+  
+There are many ways to setup PPP. One simple method, suitable for connecting to your ISP is:
+1. Create a peer options file /etc/ppp/peers/myisp
+    # Example pppd options
+    # Specific for myisp
+    /dev/tty01
+    local_IP_address:remote_IP_address
+    connect '/usr/sbin/chat -v -f /etc/ppp/peers/myisp.chat'
+    defaultroute
+    persist
+    ipparam myisp
+    asyncmap 0
+    noauth
+
+2. Create a device options file /etc/ppp/options.
+    # Example pppd options
+    # Specific for ttyname
+    lock
+    crtscts
+    57600
+    modem
+
+3. Create a chat file /etc/ppp/peers/myisp.chat
+    # Example chat file
+    # Specific for myisp
+    ABORT BUSY ABORT 'NO CARRIER' ""
+    \da\ptz0 OK
+    \da\ptdt8887776655 CONNECT
+
+4. Establish the connection with; 
+**pppd call myisp**
+
+5. Set the variable ppp_peers="myisp" in /etc/rc.conf rc.conf(5) and the connection will be established automatically at boot-time.
+
+
+Unlike an ethernet interface, you do not need to create a /etc/ifconfig.{interface} file for a PPP interface.  
+  
+If you are using demand dial ppp and do not wish certain traffic to bring up the link (for example xntpd(8) ntp traffic), you can use active-filter in your ppd.conf file:
+
+    active-filter   'not udp port ntp'  
+  
+See also:
+* chat(8) - Automated conversational script  
+
+
+###Setting up pppd to use a leased line###
+A leased line is a fixed point-to-point link. 
+Setting this up under NetBSD is a very simple process. 
+On the server build an /etc/ppp/options like this:  
+  
+    /dev/tty00
+    57600
+    noauth
+    crtscts
+    passive
+    <local_IP_address>:<remote_IP_address>
+    debug
+    netmask 255.255.255.255
+    proxyarp  
+  
+You need to change <local\_IP\_address> and <remote\_IP\_address> to the appropriate values for your network <local\_IP\_address> can be the same as your ethernet, <remote\_IP\_address> must be one valid addr for your ethernet segment).  
+  
+On the client build an /etc/ppp/options with:  
+  
+    /dev/tty00
+    57600
+    noauth
+    crtscts
+    defaultroute
+    debug  
+  
+On both sides adjust /dev/tty00 to the name of your serial port.  
+
+###Making a PPP connection from WinCE to NetBSD###
+When Windows CE makes a connection, it sends the word "CLIENT" and waits for the response "CLIENTSERVER", without any CR at the end. Configure pppd as described above and add this line to your options:  
+
+    connect "chat 'CLIENT' 'CLIENTSERVER\\c'"
+
+###How to use a ISDN modem (terminal adapter, TA)?###
+To NetBSD, the TA will look like a normal modem, and it will speak asynchronous PPP if you switch it to the right mode. 
+Depending on your ISP, you may can choose from the following modes:  
+
+* sync-to-async-HDLC conversion: 
+Translates synchronous HDLC frames intoasync-HDLC frames. 
+Use this if your provider offers "real" PPP over HDLC on the B-Channel directly, which is the standard nowadays.
+* X75: X.25 over ISDN B-channel
+* V120: which is intended to simulate lower bandwidth modems to slow computer terminal lines; unfortunately this wastes some of the bandwidth of your ISDN line, though
+* V110: which is an old version of V120  
+
+
+You set the TA's mode with some Hayes **AT** modem commands, please consult your manual for the exact commands. 
+You can then add these **AT** commands to your chat script used for your usual PPP dialing, as you do with a "normal" (analog) modem.  
+
+###Inter-networking with ISDN cards###
+Please see [here](http://netbsd.org/docs/network/isdn/).  
+
+###Inter-networking with DSL / PPPoE###
+Please see [here](http://netbsd.org/docs/network/pppoe/) for general instructions on DSL / PPPoE. 
+There's also [some more help](http://netbsd.org/docs/network/pppoe/#t-online) for users
+of the german ISP T-Online.  
+
+###Inter-networking with GPRS / CDPD###
+Please see [here](http://netbsd.org/docs/network/gprs.html).  
+
+###Networking with a gateway not on the local subnet###
+In some cases the gateway you need to route through may not be on the same subnet as the address assigned to your network interface. 
+For example, if your network interface is fxp0 and given an address of 10.0.0.1 but your gateway is known to be 192.168.0.1 (and is reachable from the interface fxp0) then the following can be used to configure the network:  
+
+    # ifconfig fxp0 inet 10.0.0.1
+    # route add -host 192.168.0.1 -link fxp0 -iface
+    # route add default -ifa 10.0.0.1 192.168.0.1  
+  
+Note that this is not a typical networking configuration, but does occur in the real world.  
+  
+###A simple NAT ("IP Masquerading") setup###
+To allow hosts that you have on a local private network (say:
+10.0.0.0/24) use your NetBSD machine as router, and setup Network
+Address Translation (NAT, also called "IP Masquerading" in another
+universe), do the following:
+
+1. On your clients, use the NAT machine as default router (put 
+defaultroute="*a.b.c.d*" into their /etc/rc.conf if they run NetBSD, where *a.b.c.d* is the internal IP number (from the 10.0.0.0 net, i.e.)).
+2. On your NAT machine, first make sure your kernel has ipfilter enabled (Most recently compiled GENERIC kernels include this by default.):
+    options         PFIL_HOOKS    	        # pfil(9) packet filter hooks
+    pseudo-device   ipfilter                # IP filter (firewall) and NAT
+
+3. Put this into your ipf.conf(5):
+    pass in from any to any
+    pass out from any to any
+
+4. Put this into your ipnat.conf(5):
+    map ppp0 10.0.0.0/24 -> 0/32 proxy port ftp ftp/tcp
+    map ppp0 10.0.0.0/24 -> 0/32 portmap tcp/udp 40000:60000
+    map ppp0 10.0.0.0/24 -> 0/32
+
+5. Enable everything in your /etc/rc.conf:
+    ipfilter=YES                                    # uses /etc/ipf.conf
+    ipnat=YES                                       # uses /etc/ipnat.conf
+
+6. Turn on IPv4 packet forwarding in /etc/sysctl.conf:
+    net.inet.ip.forwarding=1
+
+7. Reboot.
+8. Use ping(8), tcpdump(8), ipfstat(8) and ipnat(8) to debug.  
+
+
+If you want to use NAT on a PPPoE link (as usually used on DSL links), then you may want to enable [MSS clamping](http://netbsd.org/docs/network/pppoe/#clamping) too.  
+  
+
+###Maintenance###
+Monitoring activity - useful tools
+* ifconfig(8) - configure and display network interface parameters.
+* route(8) - manipulate the routing tables.
+* ping(8) - send ICMP ECHO_REQUEST packets to network hosts
+* traceroute(8) - print the route packets take to reach a network host
+* tcpdump(8) - selectively view traffic on a network interface
+* netstat(1) - show network status
+* systat(1) 'systat netstat' - dynamically display network connections
+
+
+See also:
+* [net/mrtg](http://ftp.netbsd.org/pub/pkgsrc/current/pkgsrc/net/mrtg/README.html) - This utility from the packages collection lets you monitor your network activity graphically.  
+  
+###Security###
+/etc/hosts.{allow,deny}: The configuration files for tcp-wrappers (hosts.access(5)) which is built into the master daemon inetd(8).  
+If you want a full-featured firewall that also does Network Address Translation (NAT, sometimes called IP masquerading), use IPfilter, which comes with NetBSD. 
+Check out its [homepage](http://coombs.anu.edu.au/ipfilter/). 
+Config files for NetBSD are ipf.conf(5), ipf6.conf(5), ipnat.conf(5), commands and other useful manpages are ipf(4), ipf(8), ipfs(8) and ipfstat(8).  
+See also:
+* The [CERT* Coordination Center](http://www.cert.org/) studies Internet security vulnerabilities.
+* [Steps for Recovering from a UNIX Root Compromise](http://www.cert.org/tech_tips/root_compromise.html)
+* [IP Filter Based Firewalls HOWTO](http://www.obfuscation.org/ipf/ipf-howto.txt)
+
+
+###Running Appletalk###
+NetBSD supports '[net/netatalk](http://ftp.netbsd.org/pub/pkgsrc/current/pkgsrc/net/netatalk/README.html)', which enables unix machines to communicate with appletalk machines over ethernet (but not localtalk). 
+This allows Mac OS machines to read filesystems and print to printers via a NetBSD machine, and for the NetBSD machine to print to AppleTalk printers. 
+The necessary source is available via the NetBSD [Packages Collection](http://netbsd.org/docs/software/packages.html).  
+  
+###Kerberos###
+Kerberos is a network authentication system designed to provide strong authentication for client/server applications by using secret-key cryptography. 
+NetBSD ships with the KTH Heimdal Kerberos 5 implementation.  
+  
+This section provides some simple instructions to get your NetBSD systems configured to use Kerberos. 
+For those not familiar with Kerberos, this serves as a basic how-to. 
+For those of you familiar with Kerberos, it may document some differences between NetBSD's Kerberos and the Kerberos on other systems you may have used in the past.  
+  
+For the purpose of these instructions, let's assume your DNS domain name is "foo.com". 
+Let's also assume that there are two machines in the foo.com domain, called *mach1.foo.com* and *mach2.foo.com*.  
+  
+A Kerberos administrative domain is called a realm. 
+A realm can be named anything you like, although the convention is to use the organization's DNS domain name in upper-case letters. 
+So, for your example domain of "foo.com", the Kerberos realm would be called "FOO.COM".  
+  
+An identity in Kerberos is called a principal. 
+Users, hosts, and even individual services on hosts are all principals. 
+Principal names have the form "name@REALM". 
+If the "@REALM" portion is omitted, the default realm is assumed. 
+Service principal names have the form "service/hostname@REALM". 
+The hostname should be the fully-qualified name of the host. 
+All hosts have a "host/..." service principal. 
+The "host/..." principal is generally used by login programs (e.g. telnetd(8), sshd(8)) and other things that want to authenticate the host to another principal (e.g. certain IPsec key management protocols).  
+  
+An instance of a Kerberos credential is called a ticket. 
+There is a special kind of ticket called a ticket granting ticket, or TGT. 
+The TGT is your initial set of credentials, acquired for you when you log in using the login(1) program, or by running kinit(1). 
+The TGT is used to acquire service tickets that allow you to use services that use Kerberos for authentication. 
+Tickets are stored in a special database called a credential cache. 
+For login sessions, the credential cache is generally stored in a file in /tmp. 
+The credential cache should be destroyed when you log out by the kdestroy(1) command.  
+  
+*It is important to keep your credential cache safe!*  
+  
+If you don't someone else could use your credentials to gain access to services they might not otherwise have.  
+  
+Credentials are centrally managed by the Key Distribution Center, or KDC. 
+A user authenticates with the KDC by providing a password when acquiring a TGT. 
+Services authenticate with the KDC using a similar mechanism, although the service's "password" comes from a key table, or keytab, stored on the host.  
+  
+Note that Kerberos requires that all hosts within a realm have synchronized time. 
+The best way to achieve this is to use NTP on your network.  
+  
+The following is a step-by-step description of how to get your network configured to use Kerberos.  
+
+1. Select a system to be the Kerberos KDC. 
+This system must be secure; if the KDC is compromised, all principals are compromised. 
+For our example, we will give this task to <emphasis>mach1.foo.com</emphasis>.  
+The KDC system will also play the role of the Kerberos administration server and the Kerberos password change server.  
+The easiest way to provide information about the KDC is through DNS SRV records. 
+If you wish to do this, these are the entries that would be required for our sample FOO.COM realm:
+    _kerberos._udp      IN  SRV     01 00 88 mach1.foo.com.
+    _kerberos._tcp      IN  SRV     01 00 88 mach1.foo.com.
+    _kpasswd._udp       IN  SRV     01 00 464 mach1.foo.com.
+    _kerberos-adm._tcp  IN  SRV     01 00 749 mach1.foo.com.
+    _kerberos           IN  TXT     FOO.COM  
+
+To understand the format of the SRV record, look at RFC 2782. 
+Note that you can configure this information manually on each host in the realm if you don't wish to use the DNS method.
+2. Configure /etc/krb5.conf on each system in the realm. 
+You will want to specify the default realm in this file. 
+NOTE: With some Kerberos implementations, you don't need to do this (Kerberos can find it by looking up the TXT record "_kerberos" in DNS), but NetBSD's Kerberos is disabled unless the /etc/krb5.conf file exists, so you might as well configure it there.
+    # cat > /etc/krb5.conf
+    [libdefaults]
+            default_realm = FOO.COM
+    ^D
+    #  
+
+If you are *not* using DNS SRV records to configure your realm, you must also list the KDC, kadmin, and kpasswd servers in your /etc/krb5.conf, like so:
+    # cat >> /etc/krb5.conf
+    [realms]
+            FOO.COM = {
+                    kdc = mach1.foo.com
+                    admin_server = mach1.foo.com
+                    # optional, defaults to admin_server
+                    kpasswd_server = mach1.foo.com
+            }
+    ^D
+    #
+
+Note that if you bring a mobile host into another realm in which it participates, the _kerberos TXT record from DNS will override the default realm in the /etc/krb5.conf file.
+
+3. Ensure the /var/heimdal directory exists on the KDC system. 
+It should be owned by root:wheel, and be mode 0755.
+    mach1# ls -ld /var/heimdal
+    1 drwxr-xr-x  2 root  wheel  512 Nov 30 15:21 /var/heimdal/
+    mach1#
+
+4. Create the master key that will encrypt the principal keys stored in the KDC database.
+    mach1# kstash
+    Master key:
+    Verifying password - Master key:
+    mach1#
+
+5. Create the KDC's database using kadmin(8).  You must use the "local database" option in order to do this.
+    mach1# kadmin -l
+    kadmin> init FOO.COM
+    Realm max ticket life [unlimited]:
+    Realm max renewable ticket life [unlimited]:
+    kadmin>
+
+6. Create a principal for the system the KDC is running on.
+    kadmin> add --random-key host/mach1.foo.com
+    Max ticket life [1 day]:
+    Max renewable life [1 week]:
+    Principal expiration time [never]:
+    Password expiration time [never]:
+    Attributes []:
+    kadmin>  
+Now that the principal has been created, you should extract its key into the KDC system's keytab.
+    kadmin> ext -k /etc/krb5.keytab host/mach1.foo.com
+    kadmin>
+You can list the keys in the keytab using the ktutil(8) command:
+    mach1# ktutil list
+    Vno  Type           Principal
+      1  des-cbc-crc    host/mach1.foo.com
+      1  des-cbc-md4    host/mach1.foo.com
+      1  des-cbc-md5    host/mach1.foo.com
+      1  des3-cbc-sha1  host/mach1.foo.com
+
+7. Create principals for the users you wish to authenticate using Kerberos.
+    kadmin> add joe
+    Max ticket life [1 day]:
+    Max renewable life [1 week]:
+    Principal expiration time [never]:
+    Attributes []:
+    joe@FOO.COM's Password:
+    Verifying password - joe@FOO.COM's Password:
+    kadmin>
+
+8. Configure the KDC to start at boot time and start it.
+    mach1# echo "kdc=YES" >> /etc/rc.conf
+    mach1# /etc/rc.d/kdc start
+    Starting kdc.
+    mach1#
+
+9. Configure inetd to start the kadmin (Kerberos administration) and kpasswd (Kerberos password change) servers. 
+Do this by making sure the following lines exist in /etc/inetd.conf on the KDC system:
+   kerberos-adm stream tcp  nowait root /usr/libexec/kadmind  kadmind
+   kerberos-adm stream tcp6 nowait root /usr/libexec/kadmind  kadmind
+   kpasswd      dgram  udp  wait   root /usr/libexec/kpasswdd kpasswdd
+   kpasswd      dgram  udp6 wait   root /usr/libexec/kpasswdd kpasswdd
+Make inetd(8) reload its configuration.
+   mach1# /etc/rc.d/inetd reload
+   Reloading inetd config files.
+   mach1#
+
+10. Test your KDC by obtaining a TGT and attempting to log in to the KDC system from itself, using Kerberos.
+    mach1:joe$ kinit
+    joe@FOO.COM's Password:
+    joe$ klist
+    Credentials cache: FILE:/tmp/krb5cc_100
+            Principal: joe@FOO.COM
+    
+      Issued           Expires          Principal
+    Nov 30 14:10:16  Dec  1 00:10:16  krbtgt/FOO.COM@FOO.COM
+    Nov 30 14:10:16  Dec  1 00:10:16  krbtgt/FOO.COM@FOO.COM
+    mach1:joe$ telnet -ax mach1.foo.com
+    Trying 10.0.0.1
+    Connected to mach1.foo.com.
+    Escape character is '^]'.
+    [ Trying KERBEROS5 ... ]
+    [ Kerberos V5 accepts you as ``joe@FOO.COM'' ]
+    Last login: Thu Nov 30 14:08:33 2000 from mach1
+    ...
+    mach1:joe$ exit
+    Connection closed by foreign host.
+    mach1:joe$
+
+11. Now that you've verified that things are working, add principals for the other hosts you wish to participate in the Kerberos realm.
+    mach1# kadmin -l
+    kadmin> add --random-key host/mach2.foo.com
+    Max ticket life [1 day]:
+    Max renewable life [1 week]:
+    Principal expiration time [never]:
+    Password expiration time [never]:
+    Attributes []:
+    kadmin>
+
+12. It would now be a good idea to add "admin" principals for the system administrator(s). 
+You can be a cheat, and only add a "root/admin" principal if you plan on doing all of your Kerberos administration as root.
+    mach1# kadmin -l
+    kadmin> add root/admin
+    Max ticket life [1 day]:
+    Max renewable life [1 week]:
+    Principal expiration time [never]:
+    Password expiration time [never]:
+    Attributes []:
+    root/admin@FOO.COM's Password:
+    Verifying password - root/admin@FOO.COM's Password:
+    kadmin>
+Make sure you add the principal to the kadmind ACL:
+    mach1# echo "root/admin@FOO.COM all" >> /var/heimdal/kadmind.acl
+    mach1#
+
+13. Now that you have an "admin" principal, you can easily extract the host/... principals into the keytabs on the machines they correspond to.
+    mach2# kadmin
+    kadmin> ext -k /etc/krb5.keytab host/mach2.foo.com
+    root/admin@FOO.COM's Password:
+    kadmin>
+Test this by attempting to log into the machine using Kerberos.
+    mach1:joe$ telnet -ax mach2.foo.com
+    Trying 10.0.0.2
+    Connected to mach2.foo.com.
+    Escape character is '^]'.
+    [ Trying KERBEROS5 ... ]
+    [ Kerberos V5 accepts you as ``joe@FOO.COM'' ]
+    Last login: Thu Nov 30 16:26:51 2000 from mach1
+    ...
+    mach2:joe$ exit
+    Connection closed by foreign host.
+    mach1:joe$
+
+
+Congratulations!  You now have a working Kerberos realm!  
+  
+###Authentication for Windows 2000###
+For those of you using Windows 2000, it is also possible to use your NetBSD KDC as an authentication server for your Windows 2000 hosts. 
+Windows 2000 uses Kerberos to authenticate Windows Domain logins. 
+NetBSD cannot act as a Windows 2000 Domain Controller, but using Samba, it can act as a Workgroup server.  
+  
+For the purpose of these instructions, we assume you have already configured Samba on your server, and configured your Windows 2000 hosts to use it.  
+
+1. Make sure the *Supplemental Tools* are installed on the Windows 2000 system. 
+These can be found on the Windows 2000 distribution media.  
+On the KDC, add a host principal for the Windows 2000 host:
+    mach1# kadmin -l
+    kadmin> add host/win2k.foo.com
+    Max ticket life [1 day]:
+    Max renewable life [1 week]:
+    Principal expiration time [never]:
+    Password expiration time [never]:
+    Attributes []:
+    host/win2k.foo.com@FOO.COM's Password: 
+    Verifying password - host/win2k.foo.com@FOO.COM's Password: 
+    kadmin>
+**REMEMBER THE PASSWORD YOU ENTER!** 
+You must type this password in again later on the Windows 2000 host.
+
+2. On the Windows 2000 host, configure the realm, KDC, and *machine password* entries using the **ksetup** command:
+    C:> ksetup /setdomain FOO.COM
+    C:> ksetup /addkdc FOO.COM mach1.foo.com
+    C:> ksetup /setmachpassword **password**
+	
+3. Reboot your Windows 2000 system.
+
+4. Map local users on the Windows 2000 system to Kerberos principals using the **ksetup** command:
+    C:> ksetup /mapuser * *
+You may also map specific users to specific Kerberos principals like so:
+    C:> ksetup /mapuser user@FOO.COM localuser
+
+5. Reboot your Windows 2000 system.
+
+
+Using these steps, you will now be able to select to log into a Kerberos realm when logging into your Windows 2000 system. 
+Note that for the most seamless user experience, the Samba password should be kept in-sync with the user's Kerberos password.  
+  
+For more information about Kerberos, refer to these links:  
+
+* [MIT Kerberos](http://web.mit.edu/kerberos/www/)
+* [KTH Kerberos](http://www.pdc.kth.se/kth-krb/)
+* [Kerberos FAQ](http://www.nrl.navy.mil/CCS/people/kenh/kerberos-faq.html)
+* [Meta information (Links)](http://members.nbci.com/_XMCM/jtruitt/ferret/kerberos.html)
+
+##Network problems##
+###Unable to ping other hostnames###
+If you can ping.8; another machine by IP address("***ping -n *W.X.Y.Z****"), but not by hostname, then there is probably a problem with your resolv.conf(5) file. Check your nameservers are set correctly and responding.  
+  
+###Connections seem to have a 30 second delay###
+This is usually either:
+1. Incorrect resolv.conf(5) causing hostname lookups to timeout against non responding nameservers,
+2. Remote mail servers attempting to connect back to your local hosts identd(8) while ipf(8) has been configured to drop packets to tcp port 113 without sending any response.
+
+
+##Other links##
+###Miscellaneous links###
+
+* [The Internet Super Server (inetd)](http://netbsd.org/docs/guide/en/chap-inetd.html)
+* [NetBSD Security Processes and Services](http://netbsd.org/docs/network/nsps/)
+* [Wireless networking using the Lucent WaveLAN](http://netbsd.org/docs/network/wavelan.html)
+* [HOWTO Netboot a diskless machine](http://netbsd.org/docs/network/netboot/)
+* [Steps to connect via ISDN](http://netbsd.org/docs/network/isdn/)
+* [Steps to connect via GPRS / CDPD](http://netbsd.org/docs/network/gprs.html)
+* [Steps to connect via PPPoE (DSL)](http://netbsd.org/docs/network/pppoe/)
+* [Network Address Translation (NAT) FAQ](http://www.static.net/~armenb/ipnat.htmlNetwork), using [IP-Filter](http://coombs.anu.edu.au/~avalon/ip-filter.htmlIP-Filter)
+* [HOWTO setup DHCP clients and servers](http://netbsd.org/docs/network/dhcp.html)
+* [NetBSD/amiga Guide to Networking FAQ](http://www.feyrer.de/NetBSD/NWF/)
+* [IPv6 Networking FAQ](http://netbsd.org/docs/network/ipv6/)
+* [IPsec FAQ](http://netbsd.org/docs/network/ipsec/)
+* [PPP, cross compiling, and other HOW-TOs](http://www.macbsd.com/macbsd/howto/index.html)
+* [IP Filter Based Firewalls HOWTO](http://www.obfuscation.org/ipf/ipf-howto.txt)
+* The [AltQ Paper](ftp://ftp.csl.sony.co.jp/pub/kjc/papers/altq98.ps.gz)
+* [nsupdate HOWTO](http://caunter.ca/nsupdate.txt)
+* [NetBSD, AFS and Kerberos: From Zero to Distributed File System in N Easy Steps](http://www.public.iastate.edu/~kula/talks/afs-bpw-2005/)  
+  
