@@ -1,0 +1,866 @@
+##Chapter 3. Processes and threads##
+This chapter describe processes and threads in NetBSD. This includes
+process startup, traps and system calls, process and thread creation 
+and termination, signal delivery, and thread scheduling.
+CAUTION! This chapter is an ongoing work: it has not been 
+reviewed yet, neither for typos, nor for technical mistakes.  
+  
+##3.1. Process startup##
+###**execve** usage###
+On Unix systems, new programs are started using the **execve** system call. 
+If successful, **execve** replaces the currently-executing program
+by a new one. This is done within the same process, by reinitializing 
+the whole virtual memory mapping and loading the new program binary in 
+memory. All the process's threads (except for the calling one) are
+terminated, and the calling thread CPU context is reset for executing
+the new program startup.  
+  
+Here is **execve** prototype:  
+  
+int **execve**(
+*path*,	 
+*argv*,	 
+*envp*);  
+const char \**path*;  
+char *const *argv*[];  
+char *const *envp*[];  
+  
+*path* is the filesystem path to the new 
+executable. *argv* and *envp* 
+are two NULL-terminated string arrays that hold the new program 
+arguments and environment variables. **execve** is
+responsible for copying the arrays to the new process stack.  
+  
+###3.1.2. Overview of in-kernel **execve** code path###
+Here is the top-down modular diagram for **execve**
+implementation in the NetBSD kernel when executing a native 32 bit ELF 
+binary on an i386 machine:
+  
+
+* src/sys/kern/kern_exec.c: 
+**sys_execve**  
+
+* src/sys/kern/kern_exec.c: 
+**execve1**  
+
+* src/sys/kern/kern_exec.c: 
+**check_exec**  
+
+* src/sys/kern/kern_verifiedexec.c: 
+**veriexec_verify**  
+
+* src/sys/kern/kern_conf.c: 
+\***execsw[]->es_makecmds**  
+
+* src/sys/kern/exec_elf32.c:
+**exec\_elf\_makecmds**  
+
+* src/sys/kern/exec_elf32.c:
+**exec\_check\_header**  
+
+* src/sys/kern/exec_elf32.c:
+**exec\_read\_from**  
+
+* src/sys/kern/exec_conf.c:
+\***execsw[]->u.elf\_probe\_func**  
+
+* src/sys/kern/exec_elf32.c:
+**netbsd\_elf\_probe**  
+
+* src/sys/kern/exec_elf32.c:
+**elf\_load\_psection**  
+
+* src/sys/kern/exec_elf32.c:
+**elf\_load\_file**  
+
+* src/sys/kern/exec_conf.c:
+\***execsw[]->es\_setup\_stack**  
+
+* src/sys/kern/exec_subr.c:
+**exec\_setup\_stack**  
+  
+
+\***fetch_element**  
+
+
+* src/sys/kern/kern_exec.c:
+**execve_fetch_element**  
+  
+
+\***vcp->ev_proc**  
+
+
+* src/sys/kern/exec_subr.c:
+**vmcmd_map_zero**  
+
+* src/sys/kern/exec_subr.c:
+**vmcmd_map_pagedvn**  
+
+* src/sys/kern/exec_subr.c:
+**vmcmd_map_readvn**  
+
+* src/sys/kern/exec_subr.c:
+**vmcmd_readvn**  
+
+* src/sys/kern/exec_conf.c:
+\***execsw[]->es_copyargs**  
+
+* src/sys/kern/kern_exec.c:
+**copyargs**  
+
+* src/sys/kern/kern_clock.c:
+**stopprofclock**  
+
+* src/sys/kern/kern_descrip.c:
+**fdcloseexec**  
+
+* src/sys/kern/kern_sig.c:
+**execsigs**  
+
+* src/sys/kern/kern_ras.c:
+**ras_purgeall**  
+
+* src/sys/kern/exec_subr.c:
+**doexechooks**  
+
+* src/sys/sys/event.h:
+**KNOTE**  
+
+* src/sys/kern/kern_event.c:
+**knote**  
+
+* src/sys/kern/exec_conf.c:
+\***execsw[]->es_setregs**  
+
+* src/sys/arch/i386/i386/machdep.c:
+**setregs**  
+
+* src/sys/kern/kern_exec.c:
+**exec\_sigcode\_map**  
+
+* src/sys/kern/kern_exec.c:
+\***p->p\_emul->e\_proc\_exit** (NULL)  
+
+* src/sys/kern/kern_exec.c:
+\***p->p\_emul->e\_proc\_exec** (NULL)  
+
+
+**execve** calls **execve1** with a pointer to a function called fetch_element,
+responsible for loading program arguments and environment variables in kernel space.
+The primary reason for this abstraction function is to allow fetching
+pointers from a 32 bit process on a 64 bit system.  
+  
+**execve1** uses a variable of type
+struct exec_package (defined in src/sys/sys/exec.h) to share information
+with the called functions.  
+  
+The **makecmds** is responsible for checking
+if the program can be loaded, and to build a set of virtual memory
+commands (vmcmd's) that can be used later to setup the virtual memory
+space and to load the program code and data sections. The set of
+vmcmd's is stored in the ep_vmcmds field of the 
+exec package. The use of these vmcmd set allows cancellation of the
+execution process before a commitment point.  
+  
+###3.1.3. Multiple executable format support with the exec switch###
+The exec switch is an array of structure struct execsw
+defined in src/sys/kern/exec_conf.c: execsw[].
+The struct execsw itself is defined in src/sys/sys/exec.h.  
+  
+Each entry in the exec switch is written for a given executable 
+format and a given kernel ABI. It contains test methods to check if
+a binary fits the format and ABI, and the methods to load it and start
+it up if it does. One can find here various methods called within **execve**
+code path.  
+  
+####Table 3.1. struct execsw fields summary####
+|Field name|Description|
+|es_hdrsz|The size of the executable format header|
+|es_makecmds|A method that checks if the program can be executed, and if it does, create the vmcmds required to setup the virtual memory space (this includes loading the executable code and data sections).|
+|u.elf\_probe\_func u.ecoff\_probe\_func u.macho\_probe\_func|Executable probe method, used by the **es\_makecmds** method to check if the binary can be executed. The u field is an union that contains probe methods for ELF, ECOFF and Mach-O formats|
+|es_emul|The struct emul used for handling different kernel ABI. It is covered in detail in [Section 3.2.2, 
+“Multiple kernel ABI support with the emul switch”](http://netbsd.org/docs/internals/en/chap-processes.html#emul_switch).|
+|es_prio|A priority level for this exec switch entry. This field helps choosing the test order for exec switch entries.|
+|es_arglen|XXX ?|
+|es_copyargs|Method used to copy the new program arguments and environment function in user space|
+|es_setregs|Machine-dependent method used to set up the initial process CPU registers|
+|es_coredump|Method used to produce a core from the process|
+|es\_setup\_stack|Method called by **es_makecmds** to produce a set of vmcmd for setting up the new process stack.|
+
+**execve1** iterate on the exec switch entries,
+using the es_priority for ordering, and calls the
+**es_makecmds** method of each entry until it gets
+a match.
+
+The **es_makecmds** will fill the exec package's
+ep_vmcmds field with vmcmds that will be used later
+for setting up the new process virtual memory space. 
+See for details about the vmcmds.  
+  
+###3.1.3.1. Executable format probe###
+The executable format probe is called by the
+**es_makecmds** method. Its job is simply to check
+if the executable binary can be handled by this exec switch entry.
+It can check a signature in the binary (e.g.: ELF note section), 
+the name of a dynamic linker embedded in the binary, and so on.  
+  
+Some probe functions feature wildcard, and will be used as 
+last resort, with the help of the es_prio field.
+This is the case of the native ELF 32 bit entry, for instance.  
+  
+###V3.1.3.2. Virtual memory space setup commands (vmcmds)###
+Vmcmds are stored in an array of struct exec_vmcmd
+(defined in src/sys/sys/exec.h) in the 
+ep_vmcmds field of the exec 
+package, before **execve1** decides to execute or
+destroy them.  
+  
+struct exec_vmcmd defines, in the ev_proc field, a pointer to the
+method that will perform the command, The other fields are 
+used to store the method's arguments.  
+  
+Four methods are available in src/sys/kern/exec_subr.c  
+  
+####Table 3.2. vmcmd methods####
+|Name|Description|
+|**vmcmd_map_pagedvn**|Map memory from a vnode. Appropriate for handling demand-paged text and data segments.|
+|**vmcmd_map_readvn**|Read memory from a vnode. Appropriate for handling non-demand-paged text/data segments, i.e. impure objects (a la OMAGIC and NMAGIC).|
+|**vmcmd_readvn**|XXX ?|
+|**vmcmd_zero**|Maps a region of zero-filled memory|
+  
+Vmcmd are created using **new_vmcmd**, 
+and can be destroyed using **kill_vmcmd**.  
+  
+###3.1.3.3. Stack virtual memory space setup###
+The **es_setup_stack** field of the exec switch
+holds a pointer to the method in charge of generating the vmcmd
+for setting up the stack space. Filling the stack with arguments and
+environment is done later, by the **es_copyargs** method.  
+  
+For native ELF binaries, the 
+**netbsd32_elf32_copyargs** 
+(obtained by a macro from **elf_copyargs** method 
+in src/sys/kern/exec_elf32.c) is used. It calls the
+**copyargs** (from 
+src/sys/kern/kern_exec.c) for the part of the 
+job which is not specific to ELF.  
+  
+**copyargs** has to copy back the arguments 
+and environment string from the kernel copy (in the exec package) 
+to the new process stack in userland. Then
+the arrays of pointers to the strings are reconstructed, and finally,
+the pointers to the array, and the argument count, are copied to the
+top of the stack. The new program stack pointer will be set to 
+point to the argument count, followed by the argument array pointer,
+as expected by any ANSI program.  
+  
+Dynamic ELF executable are special: they need a structure 
+called the ELF auxiliary table to be copied on the stack. The
+table is an array of pairs of key and values for various things
+such as the ELF header address in user memory, the page size, or
+the entry point of the ELF executable.
+  
+Note that when starting a dynamic ELF executable, the ELF
+loader (also known as the interpreter: 
+/usr/libexec/ld.elf_so) is loaded with the
+executable by the kernel. The ELF loader is started by
+the kernel and is responsible for starting the executable itself
+afterwards.  
+  
+##3.1.3.4. Initial register setup##
+**es_setregs** is a machine dependent method responsible for setting up the initial 
+process CPU registers. On any machine, the method will 
+have to set the registers holding the instruction pointer, 
+the stack pointer and the machine state. Some ports will need
+more work (for instance i386 will set up the segment registers,
+and Local Descriptor Table).
+The CPU registers are stored in a struct trapframe, available from struct lwp.  
+  
+###3.1.3.5. Return to userland###
+After **execve** has finished his work,
+the new process is ready for running. It is available in the run
+queue and it will be picked up by the scheduler when 
+appropriate.  
+  
+From the scheduler point of view, starting or resuming a
+process execution is the same operation: returning to userland.
+This involves switching to the process virtual memory space, 
+and loading the process CPU registers. By loading the machine
+state register with the system bit off, kernel privileges are
+dropped.  
+  
+XXX details  
+  
+##3.2. Traps and system calls##
+When the processor encounter an exception (memory fault, division
+by zero, system call instruction...), it executes a trap: control
+is transferred to the kernel, and after some assembly routine in 
+locore.S, the CPU drops in the **syscall_plain**
+(from src/sys/arch/i386/i386/syscall.c on i386) for
+system calls, or in the **trap** function 
+(from src/sys/arch/i386/i386/trap.c on i386) for other traps.
+There is also a **syscall_fancy** system call
+handler which is only used when the process is being traced by **ktrace**.  
+  
+###3.2.1. Traps###
+XXX write me  
+  
+###Multiple kernel ABI support with the emul switch###
+The struct emul is defined in src/sys/sys/proc.h. It defines various methods
+and parameters to handle system calls and traps. Each kernel ABI
+supported by the NetBSD kernel has its own struct emul.
+For instance, Linux ABI defines emul_linux in
+src/sys/compat/linux/common/linux_exec.c,
+and the native ABI defines emul_netbsd, in src/sys/kern/kern_exec.c.  
+  
+The struct emul for the current ABI is obtained
+from the es_emul field of the exec switch entry 
+that was selected by **execve**. The kernel holds a 
+pointer to it in the process' struct proc (defined in
+src/sys/sys/proc.h).  
+  
+Most importantly, the struct emul defines the
+system call handler function, and the system call table.  
+  
+###3.2.3. The syscalls.master table###
+Each kernel ABI have a system call table. The table maps system
+call numbers to functions implementing the system call in the kernel
+(e.g.: system call number 2 is **fork**). The
+convention (for native syscalls) is that the kernel function
+implementing syscall **foo** is called **sys_foo**. Emulation syscalls have
+their own conventions, like linux_sys_ prefix for the Linux emulation.
+The native system call table can be found in src/sys/kern/syscalls.master.  
+  
+This file is not written in C language. After any change, it
+must be processed by the Makefile available 
+in the same directory. syscalls.master processing
+is controlled by the configuration found in 
+syscalls.conf, and it will output several 
+files:  
+  
+####Table 3.3. Files produced from syscalls.master####
+|File name|Description|
+|syscallargs.h|Define the system call arguments structures, used to pass data from the system call handler function to the function implementing the system call.|
+|syscalls.c|An array of strings containing the names for the system calls.|
+|syscall.h|Preprocessor defines for each system call name and number -- used in libc|
+|sysent.c|An array containing for each system call an entry with the number of arguments, the size of the system call arguments structure, and a pointer to the function that implements the system call in the kernel.|  
+  
+In order to avoid namespace collision, non-native ABI have 
+syscalls.conf defining output file names prefixed
+by tags (e.g: linux_ for Linux ABI).  
+  
+System call argument structures (syscallarg for short) are 
+always used to pass arguments to functions implementing the system
+calls. Each system call has its own syscallarg structure. This 
+encapsulation layer is here to hide endianness differences.  
+  
+All functions implementing system calls have the same prototype:  
+  
+int **syscall**(
+*l*,	 
+*v*,	 
+*retval*);  
+struct lwp \**l*  
+void \**v*  
+register_t \**retval*  
+  
+*l* is the struct lwp for the calling thread, *v* is the
+syscallarg structure pointer, and *retval*
+is a pointer to the return value. The function returns the error
+code (see errno(2)) or 0 if there was no error. Note that
+the prototype is not the same as the declaration
+in syscalls.master. The declaration in syscalls.master corresponds to the
+documented prototype for the system call. This is because system
+calls as seen from userland programs have different prototypes,
+but the **sys_...** kernel functions implementing them must have the same prototype
+to unify the interface between MD syscall handlers and MI
+syscall implementation. In syscalls.master, the
+declaration shows the syscall arguments as seen by
+userland and determines the members of the syscallarg structure,
+which encapsulates the syscall arguments and has one member for
+each one.  
+  
+While generating the files listed above some substitutions
+on the function name are performed: the syscalls tagged as
+COMPAT_XX are prefixed by compat\_xx\_, same for the syscallarg structure
+name. So the actual kernel function implementing those syscalls
+have to be defined in a corresponding way. Example: if
+syscalls.master has a line:
+    97	COMPAT_30	{ int sys_socket(int domain, int type, int protocol); }
+the actual syscall function will have this prototype:  
+  
+int **compat\_30\_sys\_socket**(
+*l*,	 
+*v*,	 
+*retval*);  
+struct lwp \**l*  
+void \**v*  
+register_t \**retval*  
+  
+and *v* is a pointer to struct compat\_30\_sys\_socket_args, whose declaration is the following:  
+    struct compat_30_sys_socket_args {
+        **syscallarg**(int) domain;
+        **syscallarg**(int) type;
+        **syscallarg**(int) protocol;
+    };
+
+Note the correspondence with the documented prototype of the
+socket(2) syscall and the declaration of **sys_socket** in
+syscalls.master. The types of syscall
+arguments are wrapped by **syscallarg**
+macro, which ensures that the structure members will be padded
+to a minimum size, again for unified interface between MD and
+MI code. That's why those members should not be accessed
+directly, but by the **SCARG** macro, which
+takes a pointer to the syscall arg structure and the argument
+name and extracts the argument's value. See
+below for an example.  
+  
+###3.2.4. System call implementation in libc###
+The system call implementation in libc is autogenerated
+from the kernel implementation. As an example, let's examine the
+implementation of the access(2) function in libc. It can be
+found in the access.S file, which does not exist in the sources -- it is autogenerated when libc is
+built. It uses macros defined in src/sys/sys/syscall.h and
+src/lib/libc/arch/MACHINE_ARCH/SYS.h:
+the syscall.h file contains defines which
+map the syscall names to syscall numbers. The syscall function
+names are changed by replacing the sys_ prefix by SYS_. The
+syscall.h header file is also autogenerated
+from src/sys/kern/syscalls.master by running **make init_sysent.c** in
+src/sys/kern, as described above. By including SYS.h, we get
+syscall.h and the **RSYSCALL** macro, which accepts the syscall
+name, automatically adds the SYS_ prefix,
+takes the corresponding number, and defines a function of the
+name given whose body is just the execution of the syscall
+itself with the right number.  (The method of execution and of
+transfer of the syscall number and its arguments are machine
+dependent, but this is hidden in the
+**RSYSCALL** macro.)  
+  
+To continue the example of access(2), syscall.h contains:
+    #define SYS_access      33
+so  
+    RSYSCALL(access)  
+will result in defining the function **access**, which will
+execute the syscall with number 33. Thus, access.S needs to contain just:
+    #include "SYS.h"
+    RSYSCALL(access)  
+To automate this further, it is enough to add the name of this
+file to the ASM variable in src/lib/libc/sys/Makefile.inc and the file will be
+autogenerated with this content when libc is built.  
+  
+The above is true for libc functions which correspond exactly
+to the kernel syscalls. It is not always the case, even if the
+functions are found in section 2 of the manuals. For example the
+wait(2), wait3(2) and waitpid(2) functions are
+implemented as wrappers of only one syscall, wait4(2). 
+In such case the procedure above yields the
+**wait4** function and the wrappers can
+reference it as if it were a normal C function. 
+  
+###3.2.5.How to add a new system call###
+Let's pretend that the access(2) syscall does not exist
+yet and you want to add it to the kernel. How to proceed?
+
+* add the syscall to the
+src/sys/kern/syscalls.master list:
+    33      STD             { int sys_access(const char *path, int flags); }  
+
+* Run **make init_sysent.c** under
+src/sys/kern. This will update the
+autogenerated files: syscallargs.h,
+syscall.h, init_sysent.c and syscalls.c.  
+
+* Implement the kernel part of the system call, which will have
+the prototype:  
+  
+int **sys_access**(
+*l*,	 
+*v*,	 
+*retval*);  	
+struct lwp \**l*  
+void \**v*  
+register_t \**retval*  
+  
+as all other syscalls. To get the syscall arguments cast
+*v* to a pointer to struct sys\_access\_args and use the **SCARG**
+macro to retrieve them from that structure. For example, to get the
+*flags* argument if uap is a pointer to struct sys_access_args obtained by
+casting *v*, use:
+    SCARG(uap, flags)
+The type struct sys\_access\_args and the function
+**sys_access** are declared in sys/syscallargs.h, which is autogenerated from
+src/sys/kern/syscalls.master. Use
+    #include <sys/syscallargs.h>  
+to get those declarations.  
+
+Look in
+src/sys/kern/vfs_syscalls.c for the real
+implementation of **sys_access**.  
+
+
+* Run **make includes** in
+src/sys/sys. This will copy the autogenerated include files (most importantly,
+syscall.h) to usr/include under DESTDIR, where libc build will find them in
+the next steps.  
+
+* Add access.S to the ASM variable in src/lib/libc/sys/Makefile.inc.  
+
+
+This is all. To test the new syscall, simply rebuild libc
+(access.S will be generated at his point) and
+reboot with a new kernel containing the new syscall. To make the
+new syscall generally useful, its prototype should be added to an
+appropriate header file for use by userspace programs -- in
+the case of access(2), this is unistd.h, which is found in
+the NetBSD sources at src/include/unistd.h.  
+  
+###3.2.6. Versioning a system call###
+If the system call ABI (or even API) changes, it is
+necessary to implement the old syscall with the original semantics
+to be used by old binaries. The new version of the syscall has a
+different syscall number, while the original one retains the old
+number. This is called versioning.  
+  
+The naming conventions associated with versioning are
+complex. If the original system call is called
+**foo** (and implemented by a **sys_foo** function) and it is changed after the
+*x.y* release, the new syscall will be named
+**\_\_fooxy**, with the function implementing it
+being named **sys\_\_\_fooxy**. The original syscall
+(left for compatibility) will be still declared as sys_foo in
+syscalls.master, but will be tagged as COMPAT_XY, so the function will be named
+**compat\_xy\_sys\_foo**. We will call **sys\_foo** the original version,
+**sys\_\_\_fooxy** the new version and
+**compat\_xy\_sys\_foo** the compatibility version
+in the procedure described below.  
+  
+Now if the syscall is versioned again after version
+*z.q* has been released, the newest version
+will be called **\_\_foozq**. The intermediate
+version (formerly the new version) will have to be retained for
+compatibility, so it will be tagged as
+COMPAT_ZQ, which will change the function
+name from **sys\_\_\_fooxy** to **compat\_zq\_sys\_\_\_fooxy**. 
+The oldest version **compat\_xy\_sys\_foo** will be unaffected by the
+second versioning.  
+  
+HOW TO change a system call ABI or API and add a
+compatibility version? Let's look at a real example: versioning
+of the socket(2) system call after the error code in case
+of unsupported address family changed from
+EPROTONOSUPPORT to EAFNOSUPPORT between NetBSD 3.0 and 4.0.  
+
+
+* tag the old version (**sys_socket**) with the right
+COMPAT\_XY in syscalls.master. In the case of
+**sys\_socket**, it is COMPAT\_30, because NetBSD 3.0 was the
+last version before the system call changed.  
+
+* add the new version at the end of
+syscalls.master (this effectively allocates a
+new syscall number). Name the new version as described
+above. In our case, it will be **sys\_\_\_socket30**:  
+    394	STD		{ int sys___socket30(int domain, int type, int protocol); }  
+
+
+* The function implementing the socket syscall now
+needs to be renamed from **sys\_socket** to **sys\_\_\_socket30** to match the change
+above. Ideally, at this moment the change which requires
+versioning would be made. (Though in practice it happens
+that a change is made and only later it is realized that it
+breaks compatibility and versioning is needed.)  
+
+* Implement the compatibility version, name it
+compat\_xy\_sys\_... as described above. The implementation belongs
+under src/sys/compat and it shouldn't be a
+modified copy of the new version, because the copies would
+eventually diverge. Rather, it should be implemented in terms of
+the new version, adding the adjustments needed for compatibility
+(which means that it should behave exactly as the old
+version did.)  
+  
+In our example, the compatibility version would be
+named **compat\_30\_sys\_socket**. It can be found in
+src/sys/compat/common/uipc\_syscalls\_30.c.  
+
+* Find all references to the old syscall function in the
+kernel and point them to the compatibility version or to the new
+version as appropriate. (The kernel would not link
+otherwise.) For example, many of the compatibility syscalls
+or the syscalls.master tables for various emulations under
+src/sys/compat used to refer to **sys_socket**. Decision if the references
+should be changed to the compatibility version or to the new
+version depend on the behavior of the OS that we intend to
+emulate. E.g. FreeBSD uses the old error number, while
+System V uses the new one.  
+
+
+Now the kernel should be compilable and old statically linked
+binaries should work, as should binaries using the old
+libc. Nothing uses the new syscall yet. We have to make a new
+libc, which will contain both the new and the compatibility
+syscall:
+
+
+* in src/lib/libc/sys/Makefile.inc, replace
+the name of the old syscall by the new syscall
+(**\_\_socket30** in our example). When libc is
+rebuilt, it will contain the new function, but no programs use
+this internal name with underscore, so it is not useful yet. Also,
+we have lost the old name.  
+
+* To make newly compiled programs use the new syscall
+when they refer to the usual name
+(**socket** in our example), we add a
+\_\_RENAME(newname) statement after the
+declaration of the usual name is declared. In the case of
+**socket**, this is src/sys/sys/socket.h:  
+    int     socket(int, int, int)
+    #if !defined(__LIBC12_SOURCE__) && !defined(_STANDALONE)
+    __RENAME(__socket30)
+    #endif  
+
+
+Now, when a program is recompiled using this header,
+references to **socket** will be replaced
+by **\_\_socket30**, except for compilation
+of standalone tools (basically bootloaders), which define
+\_STANDALONE, and libc compat code itself,
+which defines \_\_LIBC12_SOURCE\_\_. The
+\_\_RENAME causes the compiler to emit
+references to the **\_\_socket30** symbol
+when **socket** is used in the source. The
+symbol will be then resolved by the linker to the new
+function (implemented by the new system call). Old binaries
+are unaware of this and continue to reference
+**socket**, which should be resolved to the
+old function (having the same API as before the change). We
+will re-add the old function in the next step.  
+
+* To make the old binaries work with the new libc, we
+must add the old function. We add it under
+src/lib/libc/compat/sys, implementing
+it using the new function. Note that we did not use the
+compatibility syscall in the kernel at all, so old programs
+will work with the new libc, even if the kernel is built
+without COMPAT_30. The compatibility
+syscall is there only for the old libc, which is used if the
+shared library was not upgraded, or internally by statically
+linked programs.  
+
+
+We are done -- we have covered the cases of old binaries,
+old libc and new kernel (including statically linked binaries),
+old binaries, new libc and new kernel, and new binaries, new
+libc and new kernel.  
+  
+###3.2.7. Committing changes to syscall tables###
+When committing your work (either a new syscall or a new
+syscall version with the compatibility syscalls), you should
+remember to commit the source (syscalls.master) for the autogenerated files
+first, and then regenerate and commit the autogenerated
+files. They contain the RCS Id of the source file and this way,
+the RCS Id will refer to the current source version. The assembly
+files generated by src/lib/libc/sys/Makefile.inc are not kept in
+the repository at all, they are regenerated every time libc is
+built.  
+  
+###3.2.8. Managing 32 bit system calls on 64 bit systems###
+When executing 32 bit binaries on a 64 bit system, care must be
+taken to only use addresses below 4 GB. This is a problem at 
+process creation, when the stack and heap are allocated, but also for
+each system call, where 32 bits pointers handled by the 32 bit process
+are manipulated by the 64 bit kernel.  
+  
+For a kernel built as a 64 bit binary, a 32 bit pointer is
+not something that makes sense: pointers can only be 64 bit long. 
+This is why 32 bit pointers are defined as an u_int32_t
+synonym called netbsd32_pointer_t (in src/sys/compat/netbsd32/netbsd32.h).  
+  
+For **copyin** and **copyout**, true 64 bits pointers are required. 
+They are obtained by casting the netbsd32\_pointer\_t through the 
+**NETBSD32PTR64** macro.  
+  
+Most of the time, implementation of a 32 bit system call is just
+about casting pointers and to call the 64 version of the system call.
+An example of such a situation can be found in 
+src/sys/compat/netbsd32/netbsd32_time.c:
+**netbsd32\_timer\_delete**. Provided that the 32 bit
+system call argument structure pointer is called uap, 
+and the 64 bit one is called ua, then helper macros
+called **NETBSD32TO64_UAP**, 
+**NETBSD32TOP_UAP**, 
+**NETBSD32TOX_UAP**, and
+**NETBSD32TOX64_UAP** can be used. Sources in
+src/sys/compat/netbsd32 provide multiple examples.  
+  
+##3.3. Processes and threads creation##
+###3.3.1. **fork**, **clone**, and **pthread_create** usage###
+XXX write me  
+  
+###3.3.2. Overview of **fork** code path###
+XXX write me  
+  
+###3.3.3. Overview of **pthread_create** code path###
+XXX write me  
+  
+##3.4. Processes and threads termination##
+###**exit**, and **pthread_exit** usage###
+XXX write me  
+  
+###Overview of **exit** code path###
+XXX write me  
+  
+###Overview of **pthread_exit** code path###
+XXX write me  
+  
+##3.5. Signal delivery##
+###3.5.1. Deciding what to do with a signal###
+XXX write me  
+  
+###3.5.2. The **sendsig** function###
+For each kernel ABI, struct emul defines a 
+machine-dependent **sendsig** function, which 
+is responsible for altering the process user context so that it calls a 
+signal handler.  
+  
+**sendsig** builds a stack frame containing
+the CPU registers before the signal handler invocation. The CPU
+registers are altered so that on return to userland, the process
+executes the signal handler and have the stack pointer set to the
+new stack frame.  
+  
+If requested at **sigaction** call time, 
+**sendsig** will also add a struct siginfo
+to the stack frame.  
+  
+Last but not least, **sendsig** may copy
+a small assembly code involved in signal cleanup, which is called the
+signal trampoline. This is detailed
+in the next section. Note that that modern NetBSD native programs
+do not use that feature anymore: it is only used for older programs,
+and other OSes emulation.  
+  
+###3.5.3. Cleaning up state after signal handler execution###
+Once the signal handler returns, the kernel must destroy the
+signal handler context and restore the previous process state. This
+can be achieved by two ways.  
+  
+First method, using the kernel-provided signal trampoline:
+**sendsig** have copied the signal trampoline on 
+the stack and has prepared the stack and/or CPU registers so that the
+signal handler returns to the signal trampoline. The job of the 
+signal trampoline is to call the **sigreturn**
+or the **setcontext** system calls, handling a pointer
+to the CPU registers saved on stack. This restores the CPU registers
+to their values before the signal handler invocation, and next time the
+process will return to userland, it will resume its execution where it stopped.  
+  
+The native signal trampoline for i386 is called 
+**sigcode** and can be found in 
+src/sys/arch/i386/i386/locore.S. Each emulated ABI
+has its own signal trampoline, which can be quite close to the native 
+one, except usually for the **sigreturn** system call
+number.  
+  
+The second method is to use a signal trampoline provided by libc.
+This is how modern NetBSD native programs do. At the time the
+**sigaction** system call is invoked, the libc stub 
+handle a pointer to a signal trampoline in libc, which is in charge
+of calling **setcontext**.  
+  
+**sendsig** will use that pointer as the return address
+for the signal handler. This method is better than the previous one, 
+because it removes the need for an executable stack page where the
+signal trampoline is stored. The trampoline is now stored in the code
+segment of libc. For instance, for i386, the signal trampoline 
+is named **\_\_sigtramp\_siginfo\_2** and can be found in 
+src/lib/libc/arch/i386/sys/\_\_sigtramp2.S.  
+  
+##3.6. Thread scheduling##
+###3.6.1. Overview###
+NetBSD 5.0 introduced a new scheduling API that allows for
+different scheduling algorithms to be implemented and selected
+at compile-time. There are currently two different scheduling
+algorithms available: The traditional 4.4BSD-based scheduler
+and the more modern M2 scheduler.  
+  
+NetBSD; supports the three scheduling policies required by POSIX
+in order to support the POSIX real-time scheduling extensions:
+
+
+* SCHED_OTHER: Time sharing (TS), the default on NetBSD;
+* SCHED_FIFO: First in, first out
+* SCHED_RR: Round-robin
+
+
+SCHED\_FIFO and SCHED\_RR are predefined scheduling
+policies, leaving SCHED_OTHER as an implementation-specific policy.  
+  
+Currently, there are 224 different priority levels with 64 being
+available for the user level. Scheduling priorities are
+organized within the following classes:  
+  
+####Scheduling priorities####
+|Class|Range|# Levels|Description|
+|Kernel (RT)|192..223|32|Software interrupts.|
+|User (RT)|128..191|64|Real-time user threads (SCHED_FIFO and SCHED_RR policies).|
+|Kernel threads|96..127|32|Internal kernel threads (*kthreads*), used by I/O, VM and other kernel subsystems.|
+|Kernel|64..95|32|Kernel priority for user processes/threads, temporarily assigned when entering kernel-space and blocking.|
+|User (TS)|0..63|64|Time-sharing range, user processes and threads (SCHED_RR policy).|
+  
+Threads running with the SCHED_FIFO policy have a fixed
+priority, i.e. the kernel does not change their priority
+dynamically. A SCHED_FIFO thread runs until
+
+
+* completion
+* voluntary yielding the CPU
+* blocking on an I/O operation or other
+* resources (memory allocation, locks)
+* preemption by a higher priority real-time thread  
+
+
+SCHED\_RR works similar to SCHED\_FIFO, except that such threads
+have a default time-slice of 100ms.  
+  
+For the SCHED_OTHER policy, both schedulers currently use the
+same run queue implementation, employing multi-level feedback
+queues. By dynamically adjusting a thread's priority to
+reflect its CPU and resource utilization, this approach allows
+the system to be responsive even under heavy loads.  
+  
+Each runnable thread is placed on one of the runqueues,
+according to its priority. Each thread is allowed to run
+on the CPU for a certain amount of time, its time-slice or
+quantum. Once the thread has used up its time-slice, it is
+placed on the back on its runqueue. When the scheduler
+searches for a new thread to run on the CPU, the first
+thread of the highest priority, non-empty runqueue is
+selected.  
+  
+###3.6.1.1. The 4.4BSD Scheduler###
+The 4.4BSD scheduler adjusts a thread's priority
+dynamically as it accumulates CPU-time. CPU utilization is
+incremented in **hardclock** each time
+the system clock ticks and the thread is found to be
+executing. An estimate of a thread's recent CPU
+utilization is stored in l_estcpu, which is adjusted once per second
+in **schedcpu** via a digital decay filter. 
+Whenever a thread accumulates four ticks in its
+CPU utilization, **schedclock** invokes **resetpriority** to recalculate the
+process's scheduling priority.
+
+###3.6.1.2. The M2 scheduler###
+The M2 scheduler employs a traditional time-sharing approach
+similar to Unix System V Release 4 and Solaris.
+
+###3.6.2. References###
+The common scheduler API is implemented within the file
+src/sys/kern/kern_synch.c. Additional information can be found in csf(9). 
+Generic run-queues are implemented in src/sys/kern/kern_runq.c. 
+Detailed information about the 4.4BSD scheduler is given in
+McKusick. A description of the SVR4 scheduler is provided in Goodheart.  
+  

@@ -1,0 +1,116 @@
+##Chapter 1. Memory management##
+
+XXX: This chapter is extremely incomplete. 
+It currently contains supporting documentation for [Chapter 2, File system internals](http://netbsd.org/docs/internals/en/chap-file-system.html) but nothing else.
+
+##1.1. The UVM virtual memory manager##
+UVM is the NetBSD's virtual memory manager.  
+
+###1.1.1. UVM objects###
+An UVM object -- or also known as
+*uobj* -- is a contiguous region of virtual
+memory backed by a specific system facility.  This can be a file
+(vnode), XXX What else?.  
+  
+In order to understand what "to be backed by"
+means, here is a review of some basic concepts of virtual memory
+management.  In a system with virtual memory support, the system
+can manage an address space bigger than the physical amount of
+memory available to it.  The address space is broken into chunks
+of fixed size, namely *pages*, as is the
+physical memory, which is divided into *page
+frames*.  
+  
+When the system needs to access a memory address, it can
+either find the page it belongs to (page hit) or not (page fault).
+In the former case, the page is already stored in main memory so
+its data can be directly accessed.  In the latter case, the page
+is not present in main memory.  
+  
+When a page fault occurs, the processor's memory management
+unit (MMU) signals the kernel through an exception and asks it
+to handle the fault: this can either result in a resolved page
+fault or in an error. Assuming that all memory accesses are
+correct (and hence there are no errors), the kernel needs to bring
+the requested page into memory.  But where is the requested page?
+Is it in the swap space? In a file? Should it be filled with
+zeros?  
+  
+Here is where the backing mechanism enters the game. 
+A backing object defines where the pages should be read from and
+where shall them be stored after modifications, if any.  Talking
+about implementation, reading a page from the backing object is
+preformed by a getpages function while writing to it is done by a
+putpages one.  
+  
+Example: consider a 32-bit address space, a page size of
+4096 bytes and an uobj of 40960 bytes (10 pages) starting at the
+virtual address 0x000100(0) this uobj's backing object is a vnode
+that represents a text file in your file system.  Assume that the
+file has not been read at all yet, so none of its pages are in
+main memory. Now, the user requests a read from offset 5000 and
+with a length of 4000. This offset falls into the uobj's second
+page and the ending address (9000) falls into the third page. 
+The kernel converts these logical offsets into memory addresses
+(0x00011388 and 0x00012328) and reads all the data contained in
+between. So what happens? The MMU causes two page faults and the
+vnode's getpages method is called for each of them, which then
+reads the pages from the corresponding file, puts them into main
+memory and returns control to the caller. At this point, the read
+has been served.  
+  
+Similarly, pages can be modified in memory after they have
+been brought to it; at some point, these changes will need to be
+flushed to the backing store, which happens with the backing
+object's putpages operation. There are multiple reasons for the
+flush, including the need to reclaim the least recently used page
+frame from main memory, explicitly synchronizing the uobj with its
+backing store (think about synchronizing a file system), closing a
+file, etc.  
+  
+##1.2. Managing wired memory##
+The malloc(9) and free(9) functions provided by the
+NetBSD kernel are very similar to their userland counterparts. 
+They are used to allocate and release wired memory, respectively.  
+  
+###1.2.1 Malloc types###
+Malloc types are used to group different allocation blocks
+into logical clusters so that the kernel can manage them in a more
+efficient manner.  
+  
+A malloc type can be defined in a static or dynamic fashion.
+Types are defined statically when they are embedded in a piece of
+code that is linked together the kernel during build time; if they
+are part of a standalone module, they are defined dynamically.  
+  
+For static declarations, the MALLOC.DEFINE(9) macro is
+provided, which is then used somewhere in the global scope of a
+source file. It has the following signature:  
+
+
+**MALLOC_DEFINE**
+( *type,*
+*short_desc,*
+*long_desc* );  
+struct malloc_type \**type*  
+const char \**short_desc*  
+const char \**long_desc*  
+  
+The first parameter takes the name of the malloc type to be
+defined; do not let the type shown above confuse you, because it
+is an internal detail you ought not know.  Malloc types are often
+named in uppercase, prefixed by M\_. Some
+examples include M\_TEMP for temporary data,
+M\_SOFTINTR for soft-interrupt structures,
+etc.  
+
+The second and third parameters are a character string
+describing the type; the former is a short description while the
+later provides a longer one.  
+
+For a dynamic declaration, you must first define the type as
+static within the source file. 
+Later on, the malloc.type.attach(9) and malloc.type.detach(9)
+functions are used to notify the kernel about the presence or
+removal of the type; this is usually done in the module's
+initialization and finalization routines, respectively.  

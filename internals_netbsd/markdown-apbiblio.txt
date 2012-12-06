@@ -1,0 +1,8 @@
+##Appendix B. Bibliography##
+[McKusick] Marshall Kirk McKusick. Keith Bostic. Michael J. Karels
+John S. Quarterman. Copyright (c) 1996 Addison-Wesley Longman, Inc.. 0201549794
+Addison-Wesley Professional #The Design and Implementation of the 4.4 BSD Operating System#  
+  
+[Goodheart] Berny Goodheart. James Cox. Michael J. Karels. Copyright (c) 1994
+Prentice Hall. Prentice Hall. #The Magic Garden Explained: The Internals of UNIX System V Release 4#  
+  

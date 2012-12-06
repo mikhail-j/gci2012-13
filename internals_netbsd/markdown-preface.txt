@@ -1,0 +1,16 @@
+##Purpose of this book##
+This book describes the NetBSD Operating System internals. 
+The main idea behind it is to provide solid documentation for contributors
+that wish to develop extensions for NetBSD or want to improve its
+existing code. Ideally, there should be no need to reverse-engineer
+the system's code in order to understand how something works.  
+  
+A lot of work is still required to finish this book: 
+some chapters are not finished and some are not even started. 
+Those parts that are planned but which are still pending to do are already part of
+the book but are clearly marked as incomplete by using a XXX marker.  
+  
+This book is currently maintained by the NetBSD www team (<www@NetBSD.org>). 
+Corrections, suggestions and
+extensions should be sent to that address.  
+  

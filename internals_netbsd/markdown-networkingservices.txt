@@ -1,0 +1,404 @@
+##Chapter 5. Networking Services##
+Services built on top of the core networking functionality
+are described here. They include, for example, the IEEE 802.11
+subsystem and the ISDN subsystem. Additionally, networking pseudo
+devices and their operation is described.  
+  
+##5.1. IEEE 802.11##
+The net80211 layer provides functionality required by
+wireless cards. It is located under sys/net80211.
+The code is meant to be shared between FreeBSD and NetBSD and therefore
+NetBSD-specific bits should be attempted to be kept in the source file
+ieee80211\_netbsd.c (likewise, there is ieee80211\_freebsd.c in FreeBSD).  
+  
+The ieee80211 interfaces are documented in Chapter
+9 of the NetBSD manual pages. This document does not attempt
+to duplicate information already available there.  
+  
+The responsibilities of the net80211 layer are the following:  
+
+
+* MAC address based access control
+* crypto
+* input and output frame handling
+* node management
+* radiotap framework for bpf/tcpdump
+* rate adaption
+* supplementary routines such a kernel diagnostic output, conversion functions and resource management
+
+
+The ieee80211 layer positions itself logically between
+the device driver and the ethernet module, although for
+transmission it is called indirectly by the device driver instead
+of control passing straight through it. For input, the ieee80211
+layer receives packets from the device driver, strips any
+information useful only to wireless devices and in case of data
+payload proceeds to hand the Ethernet frame up to
+**ether_input**.  
+  
+###5.1.1. Device Management###
+The way to describe an ieee80211 device to the ieee80211 layer
+is by using a struct ieee80211com, declared
+in sys/net80211/ieee80211_var.h.
+It is used to register a device to the ieee80211 from the
+device driver by calling **ieee80211_ifattach**.
+Fields to be filled out by the caller include the
+underlying struct ifnet pointer, function
+callbacks and device capability flags. If a device is detached,
+the ieee80211 layer can be notified with the call **ieee80211_ifdetach**.  
+  
+###5.1.2. Nodes###
+A node represents another entity in the wireless network.
+It is usually a base station when operating in BSS mode, but can
+also represent entities in an ad-hoc network. A node is described
+by struct ieee80211\_node, declared in sys/net80211/ieee80211\_node.h. Examples
+of fields contained in the structure include the node unicast
+encryption key, current transmit power, the negotiated rate set
+and various statistics.  
+  
+A list of all the nodes seen by a certain device is
+kept in the struct ieee80211com instance in the field ic_sta and
+can be manipulated with the helper functions provided in
+sys/net80211/ieee80211_node.c. The functions include, for example, methods to scan for
+nodes, iterate through the nodelist and functionality
+for maintaining the network structure.  
+  
+###5.1.3. Crypto Support###
+Crypto support enables the encryption and decryption of
+the network frames. It provides a framework for multiple
+encryption methods such as WEP and null crypto. Crypto keys
+are mostly managed through the ioctl interface and inside
+the ieee80211 layer, and the only time drivers need to worry
+about them is in the send routine when they must test for
+an encapsulation requirement and call
+**ieee80211\_crypto\_encap** if necessary.  
+  
+##ISDN##
+The ISDN kernel subsystem found under the directory
+sys/netisdn was originally developed as a
+separate package called ISDN4BSD. It was integrated into
+NetBSD for the NetBSD 1.6 release and some minor architectural
+changes were made.  
+  
+The entire subsystem consists both of a kernel part and
+a userspace part (**isdnd** being the main
+element) with much of the operating logic spread between them.
+Communication is accomplished through various device nodes,
+/dev/isdn\*, but the control state is somewhat spread between both parties.  
+  
+The netisdn architecture is usually described as four layers:  
+
+
+1. Layer 1 consists of the physical ISDN card hardware.
+From the software perspective, support means a device driver.  
+  
+
+2. Layer 2 implements the Link Access Protocol Channel D
+(LAPD), which is the link layer protocol used in ISDN.
+The protocol used here is described by ITU-T document
+series Q.92x.  
+  
+
+3. Layer 3 is the networking layer of ISDN, which takes care
+of call setup and termination. It is described by the
+ITU-T series Q.93x.  
+  
+
+4. Layer 4 abstracts the interface to the protocol stack.  
+
+
+The ISDN system can accommodate both "passive" and "active"
+hardware. The difference between these two is that "active"
+cards implement the ISDN protocols already in their firmware.
+Therefore they do not need the software implementation of layers 2
+and 3 provided as part of netisdn.  
+  
+Since layers 2 and 3 are well stabilized and the probability
+of having to deal with them is quite low, only the device driver
+interface and layer 4 are discussed here.  
+  
+Finally, some general terminology is described:  
+
+
+####Table 5.1. netisdn terminology####
+|name|description|
+|controller|An ISDN card. The identifier is a number opaque outside the subsystem and is received at the time of attaching the device driver to the ISDN subsystem.|
+|channel|The ISDN B channel identifier. These are numbered in the controller's local space, i.e. every controller has a channel 1 (known as CHAN_B1)|
+|CDID|Call Descriptor ID. This is an opaque, unique identifier for a call.|
+
+
+###5.2.1. Layer 1: Device Drivers###
+A device driver must register itself for the netisdn code
+to function.  This is done by calling
+**isdn_attach_isdnif** and by specifying the
+callback interface struct,
+struct isdn_l3_driver_functions, filled
+with the appropriate driver callbacks as a parameter.  This
+call also informs the isdn subsystem is card a basic rate card
+(2 B channels) or primary rate card (30 B channels).  After
+this, if applicable (i.e. a passive card), Layer 2 must be
+notified of a card attachment by calling
+**isdn\_layer2\_status_ind**.  Finally, the
+subsystem must be notified that the card is ready for action
+by calling **isdn\_isdnif\_ready**.
+
+Cards supporting the ISDN CAPI should not attach using
+the above method. Instead, they should hook to the CAPI layer.
+This is done by filling out the link structure
+capi\_softc\_t and calling **capi\_ll\_attach**. Currently, detaching a
+CAPI card is not possible, since **capi\_ll\_detach** detach is not implemented.  
+  
+###5.2.2. Layer 4: User Interface###
+Interaction from userspace with the subsystem is done through
+ioctl's. The actual implementations are spread over several files,
+depending on the part of the subsystem to interface with.  
+  
+###5.2.2.1. I4B driver###
+The device node /dev/isdn used
+by the ISDN userspace part, **isdnd** is
+backed by the kernel implementation in
+sys/netisdn/i4b_i4bdrv.c. The ioctl
+handler is the function **isdnioctl**.
+The type of structure passed as the ioctl argument depends
+on the ioctl command issued, and, for example, is
+msg\_connect\_req\_t for the
+**isdnd** issued dialout request I4B\_CONNECT\_REQ. The messages exchanged
+between the kernel and **isdndn** are documented
+on the isdnd(8) manual page.  
+  
+###5.2.2.2. ISDN Telephony###
+The telephony driver is used for audio calls. It consists
+of two different device nodes: /dev/isdntel\[n\]
+and /dev/isdnteld\[n\] used as the telephony
+device and the telephony dialout device, respectively. Requests
+are handled in sys/netisdn/i4b_tel.c in the
+function **isdntelioctl**. Further documentation
+is available from the isdntel(8) and isdntel(4) manual pages.  
+  
+##5.3. IPSec##
+IPSec is collection of security-related protocols: Authentication
+Header (AH) and Encapsulated Security Payload (ESP). This section,
+however, is TODO.  
+  
+##5.4. Networking pseudo-devices##
+A networking pseudo-device does not have a physical
+hardware component backing the device. Pseudo devices can be roughly
+divided into two different categories: pseudo-devices which
+behave like an interface and devices which are controlled
+through a device node. An interface built on top of a
+pseudo-device acts completely the same as an interface with
+hardware backing the interface.  
+  
+Since there is no backing hardware involved, most of
+these interfaces can be generated and destroyed dynamically at
+runtime. Interfaces that can dynamically de/allocate themselves
+known as cloning interfaces. They are created and destroyed
+by the **ifconfig** tool by using **ifconfig
+create** and **ifconfig destroy**,
+respectively. Additionally, the interface names available for
+cloning can be requested by **ifconfig -C**.  
+  
+The list of networking pseudo-devices with short descriptions
+is presented below.  
+  
+####Table 5.2. Available networking pseudo-devices####
+|name|description|
+|bpfilter|Berkeley Packet filter, bpf(4). Can be used to capture network traffic matching certain pattens.|
+|ipfilter|IP Filter Firewall, ipf(4). Used to filter IP traffic.|
+|loop|The loopback network device, lo(4). All output is directed as input for the loopback interface.|
+|ppp|Point-to-Point Protocol, ppp(4). This interface allows to create point-to-point network links.|
+|pppoe|Point-to-Point Protocol Over Ethernet, pppoe(4). Encapsulates PPP inside Ethernet frames.|
+|sl|Serial Line IP, sl(4). Used to transport IP over a serial connection.|
+|strip|STarmode Radio IP, strip(4). Similar to SLIP, except uses the STRIP protocol instead of SLIP.|
+|tap|A virtual ethernet device, tap(4). The tap[n] interface is attached to /dev/tap[n]. I/O on the device node maps to Ethernet traffic on the interface and vice versa.|
+|tun|Tunneling network device, tun(4). Similar to tap, except that the packets handled are network layer packets instead of Ethernet frames.|
+|gre|Encapsulating network device, gre(4). The gre device can encapsulate datagrams into IP packets in multiple formats, e.g. IP protocols 47 and 55, and tunnels the packets over an IP network.|
+|gif|the generic tunneling interface, gif(4). gif can encapsulate and tunnel IPv{4,6} over IPv{4,6}.|
+|faith|IPv6-to-IPv4 TCP relay interface, faith(4). Can use used, in conjunction with **faithd**, to relay TCPv6 traffic to IPv4 addresses.|
+|stf|Six To Four tunneling interface, stf(4). Tunnels IPv6 over IPv4, RFC3056.|
+|vlan|IEEE 802.1Q Virtual LAN, vlan(4). Supports Virtual LAN interfaces which can be attached to physical interfaces and then be used to send virtual lan tagged traffic.|
+|bridge|Bridging device, bridge(4). The bridging device is used to attach IEEE 802 networks together on the link layer.|
+|pf|Packet Filter, pf(4). The packet filter is a traffic filter.|  
+  
+###5.4.1. Cloning devices###
+In the distant past, the number of pseudo-device instances
+for each device type was hardcoded into the kernel configuration
+and fixed at compile-time. This, while the fastest method
+for implementation, was wasteful because it allocated resources
+based on a compile-decision and limiting because it required
+recompilation when wanting to use the n+1'th device. Cloning
+devices allow resource allocation and resource release
+dynamically at runtime.  
+  
+This discussion will concentrate on cloning interfaces,
+i.e. cloners which are created using **ifconfig**.  
+  
+Most of the work behind in cloning in interface is handled
+in common code in net/if.c in the
+**if_clone** family of functions. Cloning
+interfaces are registered and deregistered using
+**if\_clone\_attach** and **if\_clone\_detach**, respectively. These
+calls are usually made in the pseudo-device attach and
+detach routines. Both functions take as an argument a pointer
+to the if_clone structure, which identifies the cloning interface.  
+  
+struct if\_clone is initialized by using the IF\_CLONE\_INITIALIZER macro:  
+    struct if_clone cloner =
+        IF_CLONE_INITIALIZER("clonername", cloner_create, cloner_destroy);
+
+The parameters **cloner_create** and
+**cloner_destroy** are pointers to functions
+to be called from the common code.  Create is responsible
+for allocating resources and attaching the interface to the
+rest of the framework while destroy is responsible for the
+opposite. Of course, destroy must preserve normal system
+semantics and not remove resources which are still in use.
+This is relevant with for example the tun device, where users
+open the /dev/tun\[n\] when using tun interface n.  
+  
+A create or destroy operation coming from userspace
+passes through **sys\_ioctl** and **soo\_ioctl** before landing at
+**ifioctl**. The correct struct if\_clone is found by searching the names of the
+attached cloners, i.e. doing string comparison. After this
+the function pointers in the structure are used.  
+  
+###5.4.2. Pseudo Interface Operation###
+The operation and attachment to the rest of the operating
+system kernel for a pseudo device depend greatly on the device's
+functionality. The following are some examples:  
+
+
+* The vlan interface is always attached to a
+parent device when operational. It sends packets by vlan
+encapsulating them and enqueueing them onto the parent
+device packet send queue. It receives packets from **ether_input**, removes the vlan
+encapsulation and passes it back to the parent interface's **if_input** routine.  
+  
+* The gif interface registers itself as an interface to the
+networking stack by using **if_attach** and
+**gif_output** as the output routine. This
+output routine is then called from the network layer output
+routine, **ip_output** and the output
+routine eventually calls **ip_output** again
+once the packet has been encapsulated. Input is handled
+by **in\_gif\_input**, which is called via
+the struct protosw input routine
+from the encapsulated packet input function.  
+  
+* The tap interface registers itself as a network interface
+using **if_attach**. When a packet is
+sent through it, it notifies the device node listener
+or, if corresponding device is not open, simply drops
+all packets. When a packet is written to the device node,
+it gets injected into the networking stack through
+the **if_input** routine in the associated struct ifnet.
+
+
+##5.5. Packet Filters##
+In principle there are three pseudo devices involved
+with packet filtering. Out of these ipfilter and pf are
+involved in filtering network traffic and bpf is an interface
+to capture and access raw network traffic.  All will be
+discussed briefly from the point of view of their attachment
+to rest of the kernel; the packet inspection and modification
+engines they implement are beyond the scope of this document.  
+  
+Out of these ipfilter and pf are implemented using
+pfil hooks, while bpf is implemented as a tap in all the network drivers.  
+  
+###5.5.1. Packet Filter Interface###
+pfil is a purely in-kernel interface to support packet
+filtering hooks. Packet filters can register hooks which should
+be called when packet processing taken place; in it's essence
+pfil is a list of callbacks for certain events. In addition
+to being able to register a filter for incoming and outgoing
+packets, pfil provides support for interface attach/detach and
+address change notifications. pfil is described on the pfil(9)
+manual page and is used by IP Filter and Packet Filter (pf) to
+hook to the packet stream for implementing firewalls and NAT.  
+  
+###5.5.3. IPFilter###
+IP Filter, found in sys/dist/ipf/netinet,
+is a multiplatform packet filtering device useful for
+creating a firewall and Network Address Translation (NAT).
+Operation is controlled through device nodes with userland tools.
+IP Filter is documented on multiple different manual pages:
+ipf(4), ipl(4), ipnat(4), ipf(5) and ipnat(5) are good starting points.  
+  
+IP Filter is attached to the system by enabling it with the
+command line tool **ipf -E**. This causes the
+ioctl SIOCFRENB to be executed and function
+**iplattach** to be called. **iplattach** calls pfil routines to establish
+a packet filter hook to check for packet delivery. The packet
+filter hooks catch both incoming and outgoing packets and
+call the IP Filter routine **fr_check**, which,
+through various subroutine calls, decides if the packet should
+be let in or out and applies necessary address translations for
+NAT. Detachment is performed by removing the registered pfil
+hooks to stop packet delivery to IP Filter.  
+  
+###5.5.3. pf###
+pf, found in sys/dist/pf/net,
+provides roughly the same functionality as ipfilter. Its
+operation is also very similar. Some relevant manual pages
+describing pf are pf(4), pf.conf(5) and pfctl(8).  
+  
+pf is started using the tool **pfctl**,
+which issues a DIOCSTART ioctl.  This causes
+pf to call **pf\_pfil\_attach**, which runs the
+necessary pfil attachment routines. The key routines after
+this are **pf\_test** and **pf\_test6**, which are called for IPv4
+and IPv6 packets, respectively, to test should they be
+allowed to be sent/received or dropped. The packet filter
+hooks, and therefore the whole of pf, are disabled with
+the DIOCSTOP ioctl, usually issued with **pfctl**.  
+  
+###5.5.4. Berkeley Packet Filter###
+The Berkeley Packet Filter (bpf) (sys/net/bpf.c) provides link layer
+access to data available on the network through interfaces
+attached to the system.  bpf is used by opening a device
+node, /dev/bpf and issuing **ioctl**'s to control the operation of
+the device. A popular example of a tool using bpf is **tcpdump**.  
+  
+The device /dev/bpf is a cloning device, meaning it can be opened multiple times. 
+It is in principle similar to a cloning interface, except bpf provides
+no network interface, only a method to open the same device
+multiple times.  
+  
+To capture network traffic, a bpf device must be attached
+to an interface. The traffic on this interface is then passed
+to bpf to evaluation. For attaching an interface to an open
+bpf device, the ioctl BIOCSETIF is used.
+The interface is identified by passing a struct ifreq, which contains the
+interface name in ASCII encoding. This is used to find the
+interface from the kernel tables. bpf
+registers itself to the interfaces struct ifnet field if_bpf
+to inform the system that it is interested about traffic on this particular interface.
+The listener can also pass a set of filtering rules to capture
+only certain packets, for example ones matching a given host and port
+combination.  
+  
+bpf captures packets by supplying a tapping interface,
+**bpf_tap**-functions, to link layer drivers
+and relying on the drivers to always pass packets to it. Drivers
+honor this request and commonly have code which, along both the
+input and output paths, does:
+    #if NBPFILTER > 0
+                    if (ifp->if_bpf)
+    	                    bpf_mtap(ifp->if_bpf, m0);
+    #endif
+This passes the mbuf to the bpf for inspection. bpf inspects
+the data and decides is anyone listening to this particular
+interface is interested in it. The filter inspecting the data
+is highly optimized to minimize time spent inspecting each
+packet. If the filter matches, the packet is copied to await
+being read from the device.  
+  
+The bpf tapping feature looks very much like the
+interfaces provided by pfil, so a valid is question is debating
+the necessity of both. Even though they provide similar services,
+their functionality is disjoint. The bpf mtap wants to access
+packets right off the wire without any alteration and possibly
+copy it for further use. Callers linking into pfil want to
+modify and possibly drop packets.  
+  
