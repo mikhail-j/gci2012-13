@@ -1,0 +1,73 @@
+=VMPlayer in Windows - Installing SoaS in a VM=
+This is a guide to setup Sugar as a VM on your computer.
+<br>
+==Getting Started==
+VMware Player ([https://my.vmware.com/web/vmware/free#desktop_end_user_computing/vmware_player/5_0 here])
+Sugar LiveCD/USB (http://wiki.sugarlabs.org/go/Sugar_on_a_Stick/Downloads here)
+<br />VirtualBox Instructions (not yet complete).
+<br>
+==VMware Player==
+===Running your VM for the first time===
+Please install VMware Player ([https://my.vmware.com/web/vmware/free#desktop_end_user_computing/vmware_player/5_0 here]) first.
+<br><br>
+Then run VMware Player for the first time.
+<br><br>
+[[File:Vmware_menu00.png]]
+<br><br>
+Click the "Browse" button to search for the .ISO file you downloaded in "Getting Started". Then, click the "Next >" button.
+<br><br>
+[[File:Vmware_menu01.png]]
+<br><br>
+Select "Other" for both "Guest Operating System" and "Version", and click the "Next >" button.
+<br><br>
+[[File:Vmware_menu02.png]]
+<br><br>
+You are free to rename Other to something different (I chose Sugar) and click the "Next >" button.
+<br><br>
+[[File:Vmware_menu03.png]]
+<br><br>
+By default, VMware Player will try to make the disk size of the VM 8GB. If this seems to be too much for you, lower it and just make sure you have 4GB+ set for the disk size.
+<br><br>
+[[File:Vmware_menu04.png]]
+<br><br>
+Click "Customize Hardware", we need to increase the memory.
+<br><br>
+[[File:Vmware_menu05.png]]
+<br><br>
+Set the memory to 512MB+ (more than 512MB if your computer has memory to spare).
+<br><br>
+[[File:Vmware_menu06.png]]
+<br><br>
+Click the "Finish" button to complete the setup of your VM.
+<br><br>
+[[File:Vmware_menu07.png]]
+<br><br>
+Now select your VM (I named mine Sugar earlier), you can now click "Play virtual machine".
+<br><br>
+[[File:Vmware_menu08.png]]
+<br><br>
+You should now see the following boot screen.
+<br><br>
+[[File:Sugar_BootMenu.png]]
+<br><br>
+When you hit the "Enter" key on your keyboard or it started automatically, you should briefly see this on your screen.
+<br><br>
+[[File:sugar_boot0.png]]
+<br><br>
+The load bar should look like this.
+<br><br>
+[[File:Load_bar.gif]]
+<br><br>
+After the loading bar reaches the end, you should see this screen below, type your username into the box and click "Next".
+<br><br>
+[[File:Uname.png]]
+<br><br>
+Select your color (optional) and click "Done".
+<br><br>
+[[File:Scolor.png]]
+<br><br>
+If you see the following, then you've successfully entered Sugar in a VM.
+<br><br>
+[[File:Congrats_tis.png]]
+<br><br>
+Congratulations, you now have to install the Operating System to the disk. You can do that by following the tutorial found [http://wiki.sugarlabs.org/go/Tutorials/Installation/Install_with_liveinst here].
