@@ -1,0 +1,621 @@
+# NetBSD/xen Howto
+
+## Introduction ##
+Xen is a virtual machine monitor for x86 hardware (requires i686-class CPUs), which supports running multiple guest operating systems on a single machine.
+Guest OSes (also called "domains") require a modified kernel which supports Xen hypercalls in replacement to access to the physical hardware. 
+At boot, the Xen kernel (also known as the Xen hypervisor) is loaded (via **grub**) along with the guest kernel for the first domain (called *domain0*). 
+The Xen kernel has to be loaded using the multiboot protocol. 
+You can use **grub** or the NetBSD boot loader for this (**grub** has some limitations, detailed below). 
+*domain0* has special privileges to access the physical hardware (PCI and ISA devices), administrate other domains and provide virtual devices (disks and network) to other domains that lack those privileges.  
+For more details, see [http://www.xen.org/](http://www.xen.org/ "Introduction").  
+  
+NetBSD can be used for both *domain0 (Dom0)* and other, unprivileged (DomU) domains. 
+(Actually there can be multiple privileged domains accessing different parts of the hardware, all providing virtual devices to unprivileged domains. We will only talk about the case of a single privileged domain, *domain0*). 
+*domain0* will see physical devices much like a regular i386 or amd64 kernel, and will own the physical console (VGA or serial). Unprivileged domains will only see a character-only virtual console, virtual disks (`xbd`) and virtual network interfaces (`xennet`) provided by a privileged domain (usually *domain0*). 
+xbd devices are connected to a block device (i.e., a partition of a disk, raid, ccd, ... device) in the privileged domain. xennet devices are connected to virtual devices in the privileged domain, named xvif<domain number>.
+<if number for this domain>, e.g., xvif1.0. 
+Both xennet and xvif devices are seen as regular Ethernet devices (they can be seen as a crossover cable between 2 PCs) and can be assigned addresses (and be routed or NATed, filtered using IPF, etc ...) or be added as part of a bridge.
+
+##Installing NetBSD as privileged domain (Dom0)##
+First do a NetBSD/i386 or NetBSD/amd64 [installation](http://netbsd.org/docs/guide/en/chap-inst.html) of the 5.0 release as you usually do on x86 hardware. 
+The binary releases are available from [ftp://ftp.NetBSD.org/pub/NetBSD/NetBSD-5.0.2/](ftp://ftp.NetBSD.org/pub/NetBSD/NetBSD-5.0.2/). 
+Binary snapshots for current and the netbsd-4 branches are available on [daily autobuilds](http://nyftp.netbsd.org/pub/NetBSD-daily/). 
+If you plan to use the **grub** boot loader, when partitioning the disk you have to make the root partition smaller than 512Mb, and formatted as FFSv1 with 8k block/1k fragments. 
+If the partition is larger than this, uses FFSv2 or has different block/fragment sizes, grub may fail to load some files. 
+Also keep in mind that you'll probably want to provide virtual disks to other domains, so reserve some partitions for these virtual disks.
+Alternatively, you can create large files in the file system, map them to vnd(4) devices and export theses vnd devices to other domains.  
+  
+Next step is to install the Xen packages via pkgsrc or from binary packages. 
+See [the pkgsrc documentation](http://www.NetBSD.org/docs/pkgsrc/) if you are unfamiliar with pkgsrc and/or handling of binary packages. 
+Xen 3.1, 3.3 and 4.1 are available. 3.1 supports PCI pass-through while other versions do not. 
+You'll need either [sysutils/xentools3](http://ftp.netbsd.org/pub/pkgsrc/current/pkgsrc/sysutils/xentools3/README.html) and [sysutils/xenkernel3](http://ftp.netbsd.org/pub/pkgsrc/current/pkgsrc/sysutils/xenkernel3/README.html) for Xen 3.1, [sysutils/xentools33](http://ftp.netbsd.org/pub/pkgsrc/current/pkgsrc/sysutils/xentools33/README.html) and [sysutils/xenkernel33](http://ftp.netbsd.org/pub/pkgsrc/current/pkgsrc/sysutils/xenkernel33/README.html) for Xen 3.3 or [sysutils/xentools41](http://ftp.netbsd.org/pub/pkgsrc/current/pkgsrc/sysutils/xentools41/README.html) and [sysutils/xenkernel41](http://ftp.netbsd.org/pub/pkgsrc/current/pkgsrc/sysutils/xenkernel41/README.html) for Xen 4.1. 
+You'll also need [sysutils/grub](http://ftp.netbsd.org/pub/pkgsrc/current/pkgsrc/sysutils/grub/README.html) if you plan do use the grub boot loader.
+If using Xen 3.1, you may also want to install [sysutils/xentools3-hvm](http://ftp.netbsd.org/pub/pkgsrc/current/pkgsrc/sysutils/xentools3-hvm/README.html) which contains the utilities to run unmodified guests OSes using the *HVM* support (for later versions this is included in [sysutils/xentools](http://ftp.netbsd.org/pub/pkgsrc/current/pkgsrc/sysutils/xentools/README.html)). 
+Note that your CPU needs to support this. Intel CPUs must have the \'VT\' instruction, AMD CPUs the \'SVM\' instruction. 
+You can easily find out if your CPU support HVM by using NetBSD's cpuctl command:
+
+     # cpuctl identify 0
+     cpu0: Intel Core 2 (Merom) (686-class), id 0x6f6
+     cpu0: features 0xbfebfbff<FPU,VME,DE,PSE,TSC,MSR,PAE,MCE,CX8,APIC,SEP,MTRR>
+     cpu0: features 0xbfebfbff<PGE,MCA,CMOV,PAT,PSE36,CFLUSH,DS,ACPI,MMX>
+     cpu0: features 0xbfebfbff<FXSR,SSE,SSE2,SS,HTT,TM,SBF>
+     cpu0: features2 0x4e33d<SSE3,DTES64,MONITOR,DS-CPL,*VMX*,TM2,SSSE3,CX16,xTPR,PDCM,DCA>
+     cpu0: features3 0x20100800<SYSCALL/SYSRET,XD,EM64T>
+     cpu0: "Intel(R) Xeon(R) CPU            5130  @ 2.00GHz"
+     cpu0: I-cache 32KB 64B/line 8-way, D-cache 32KB 64B/line 8-way
+     cpu0: L2 cache 4MB 64B/line 16-way
+     cpu0: ITLB 128 4KB entries 4-way
+     cpu0: DTLB 256 4KB entries 4-way, 32 4MB entries 4-way
+     cpu0: Initial APIC ID 0
+     cpu0: Cluster/Package ID 0
+     cpu0: Core ID 0
+     cpu0: family 06 model 0f extfamily 00 extmodel 00  
+  
+Depending on your CPU, the feature you are looking for is called HVM, SVM or VMX.  
+  
+Next you need to copy the selected Xen kernel itself. 
+pkgsrc installed them under /usr/pkg/xen*-kernel/. 
+The file you're looking for is xen.gz. Copy it to your root file system. 
+xen-debug.gz is a kernel with more consistency checks and more details printed on the serial console. 
+It is useful for debugging crashing guests if you use a serial console. 
+It is not useful with a VGA console.  
+  
+You'll then need a NetBSD/Xen kernel for *domain0* on your root file system. 
+The XEN3PAE\_DOM0 kernel or XEN3\_DOM0 provided as part of the i386 or amd64 binaries is suitable for this, but you may want to customize it. 
+Keep your native kernel around, as it can be useful for recovery. 
+*Note:* the *domain0* kernel must support KERNFS and /kern must be
+mounted because *xend* needs access to
+/kern/xen/privcmd.  
+  
+Next you need to get a bootloader to load the
+xen.gz kernel, and the NetBSD *domain0* kernel as a module.
+This can be **grub** or NetBSD's boot loader.
+Below is a detailled example for grub, see the boot.cfg(5) manual
+page for an example using the later.  
+  
+This is also where you'll specify the memory allocated to *domain0*, the console to use, etc ...  
+  
+Here is a commented /grub/menu.lst file:  
+
+    #Grub config file for NetBSD/xen. Copy as /grub/menu.lst and run
+    # grub-install /dev/rwd0d (assuming your boot device is wd0).
+    #
+    # The default entry to load will be the first one
+    default=0
+    
+    # boot the default entry after 10s if the user didn't hit keyboard
+    timeout=10
+    
+    # Configure serial port to use as console. Ignore if you'll use VGA only
+    serial --unit=0 --speed=115200 --word=8 --parity=no --stop=1
+    
+    # Let the user select which console to use (serial or VGA), default
+    # to serial after 10s
+    terminal --timeout=10 serial console
+    
+    # An entry for NetBSD/xen, using /netbsd as the domain0 kernel, and serial
+    # console. Domain0 will have 64MB RAM allocated.
+    # Assume NetBSD is installed in the first MBR partition.
+    title Xen 3 / NetBSD (hda0, serial)
+      root(hd0,0)
+      kernel (hd0,a)/xen.gz dom0_mem=65536 com1=115200,8n1
+      module (hd0,a)/netbsd bootdev=wd0a ro console=ttyS0
+    
+    # Same as above, but using VGA console
+    # We can use console=tty0 (Linux syntax) or console=pc (NetBSD syntax)
+    title Xen 3 / NetBSD (hda0, vga)
+      root(hd0,0)
+      kernel (hd0,a)/xen.gz dom0_mem=65536
+      module (hd0,a)/netbsd bootdev=wd0a ro console=tty0
+    
+    # NetBSD/xen using a backup domain0 kernel (in case you installed a
+    # nonworking kernel as /netbsd
+    title Xen 3 / NetBSD (hda0, backup, serial)
+      root(hd0,0)
+      kernel (hd0,a)/xen.gz dom0_mem=65536 com1=115200,8n1
+      module (hd0,a)/netbsd.backup bootdev=wd0a ro console=ttyS0
+    title Xen 3 / NetBSD (hda0, backup, VGA)
+      root(hd0,0)
+      kernel (hd0,a)/xen.gz dom0_mem=65536
+      module (hd0,a)/netbsd.backup bootdev=wd0a ro console=tty0
+    
+    #Load a regular NetBSD/i386 kernel. Can be useful if you end up with a
+    #nonworking /xen.gz
+    title NetBSD 5.1
+      root (hd0,a)
+      kernel --type=netbsd /netbsd-GENERIC
+    
+    #Load the NetBSD bootloader, letting it load the NetBSD/i386 kernel.
+    #May be better than the above, as grub can't pass all required infos
+    #to the NetBSD/i386 kernel (e.g. console, root device, ...)
+    title NetBSD chain
+      root        (hd0,0)
+      chainloader +1
+    
+    ## end of grub config file.  
+  
+Install grub with the following command:  
+
+    # grub --no-floppy
+    
+    grub> root (hd0,a)
+     Filesystem type is ffs, partition type 0xa9
+    
+    grub> setup (hd0)
+     Checking if "/boot/grub/stage1" exists... no
+     Checking if "/grub/stage1" exists... yes
+     Checking if "/grub/stage2" exists... yes
+     Checking if "/grub/ffs_stage1_5" exists... yes
+     Running "embed /grub/ffs_stage1_5 (hd0)"...  14 sectors are embedded.
+    succeeded
+     Running "install /grub/stage1 (hd0) (hd0)1+14 p (hd0,0,a)/grub/stage2 /grub/menu.lst"...
+     succeeded
+    Done.
+
+##Creating an unprivileged NetBSD domain (DomU)##
+Once you have *domain0* running, you need to start the xen tool daemon (**/usr/pkg/share/examples/rc.d/xend start**) and the xen backend daemon (**/usr/pkg/share/examples/rc.d/xenbackendd start**).
+Make sure that /dev/xencons and /dev/xenevt exist before starting **xend**. 
+You can create them with this command:  
+
+    # cd /dev && sh MAKEDEV xen  
+  
+xend will write logs to /var/log/xend.log and /var/log/xend-debug.log. You can then control xen with the xm tool. 
+'xm list' will show something like:  
+
+    # xm list
+    Name              Id  Mem(MB)  CPU  State  Time(s)  Console
+    Domain-0           0       64    0  r----     58.1  
+
+'xm create' allows you to create a new domain. 
+It uses a config file in PKG_SYSCONFDIR for its parameters. 
+By default, this file will be in /usr/pkg/etc/xen/. 
+On creation, a kernel has to be specified, which will be executed in the new domain (this kernel is in the *domain0* file system, not on the new domain virtual disk; but please note, you should install the same kernel into *domainU* as /netbsd in order to make your system tools, like savecore(8), work). 
+A suitable kernel is provided as part of the i386 and amd64 binary sets: XEN3_DOMU.  
+  
+Here is an /usr/pkg/etc/xen/nbsd example config file:  
+
+    #  -*- mode: python; -*-
+    #============================================================================
+    # Python defaults setup for 'xm create'.
+    # Edit this file to reflect the configuration of your system.
+    #============================================================================
+    
+    #----------------------------------------------------------------------------
+    # Kernel image file. This kernel will be loaded in the new domain.
+    kernel = "/home/bouyer/netbsd-XEN3_DOMU"
+    #kernel = "/home/bouyer/netbsd-INSTALL_XEN3_DOMU"
+    
+    # Memory allocation (in megabytes) for the new domain.
+    memory = 128
+    
+    # A handy name for your new domain. This will appear in 'xm list',
+    # and you can use this as parameters for xm in place of the domain
+    # number. All domains must have different names.
+    #
+    name = "nbsd"
+    
+    # The number of virtual CPUs this domain has.
+    #
+    vcpus = 1
+    
+    #----------------------------------------------------------------------------
+    # Define network interfaces for the new domain.
+    
+    # Number of network interfaces (must be at least 1). Default is 1.
+    nics = 1
+    
+    # Define MAC and/or bridge for the network interfaces.
+    #
+    # The MAC address specified in ``mac'' is the one used for the interface
+    # in the new domain. The interface in domain0 will use this address XOR'd
+    # with 00:00:00:01:00:00 (i.e. aa:00:00:51:02:f0 in our example). Random
+    # MACs are assigned if not given.
+    #
+    # ``bridge'' is a required parameter, which will be passed to the
+    # vif-script called by xend(8) when a new domain is created to configure
+    # the new xvif interface in domain0.
+    #
+    # In this example, the xvif is added to bridge0, which should have been
+    # set up prior to the new domain being created -- either in the
+    # ``network'' script or using a /etc/ifconfig.bridge0 file.
+    #
+    vif = [ 'mac=aa:00:00:50:02:f0, bridge=bridge0' ]
+    
+    #----------------------------------------------------------------------------
+    # Define the disk devices you want the domain to have access to, and
+    # what you want them accessible as.
+    #
+    # Each disk entry is of the form:
+    #
+    #	phy:DEV,VDEV,MODE
+    #
+    # where DEV is the device, VDEV is the device name the domain will see,
+    # and MODE is r for read-only, w for read-write.  You can also create
+    # file-backed domains using disk entries of the form:
+    #
+    #	file:PATH,VDEV,MODE
+    #
+    # where PATH is the path to the file used as the virtual disk, and VDEV
+    # and MODE have the same meaning as for ``phy'' devices.
+    #
+    # VDEV doesn't really matter for a NetBSD guest OS (it's just used as an index),
+    # but it does for Linux.
+    # Worse, the device has to exist in /dev/ of domain0, because xm will
+    # try to stat() it. This means that in order to load a Linux guest OS
+    # from a NetBSD domain0, you'll have to create /dev/hda1, /dev/hda2, ...
+    # on domain0, with the major/minor from Linux :(
+    # Alternatively it's possible to specify the device number in hex,
+    # e.g. 0x301 for /dev/hda1, 0x302 for /dev/hda2, etc ...
+    
+    disk = [ 'phy:/dev/wd0e,0x1,w' ]
+    #disk = [ 'file:/var/xen/nbsd-disk,0x01,w' ]
+    #disk = [ 'file:/var/xen/nbsd-disk,0x301,w' ]
+    
+    #----------------------------------------------------------------------------
+    # Set the kernel command line for the new domain.
+    
+    # Set root device. This one does matter for NetBSD
+    root = "xbd0"
+    # extra parameters passed to the kernel
+    # this is where you can set boot flags like -s, -a, etc ...
+    #extra = ""
+    
+    #----------------------------------------------------------------------------
+    # Set according to whether you want the domain restarted when it exits.
+    # The default is False.
+    #autorestart = True
+    
+    # end of nbsd config file ====================================================  
+  
+When a new domain is created, xen calls the
+/usr/pkg/etc/xen/vif-bridge
+script for each virtual network interface created in
+*domain0*. This
+can be used to automatically configure the xvif?.? interfaces
+in *domain0*. In our example, these will be
+bridged with the bridge0 device in
+*domain0*, but the bridge has to exist first.
+To do this, create the file /etc/ifconfig.bridge0
+and make it look like this:  
+
+    create
+    !brconfig $int add ex0 up  
+  
+(replace ex0 with the name of your physical interface). 
+Then bridge0 will be created on boot. 
+See the bridge(4) man page for details.  
+  
+So, here is a suitable /usr/pkg/etc/xen/vif-bridge for xvif?.? 
+(a working vif-bridge is also provided with xentools20) configuring:  
+
+    #!/bin/sh
+    #============================================================================
+    # &dollar;NetBSD: vif-bridge-nbsd,v 1.3 2005/11/08 00:47:35 jlam Exp $
+    #
+    # /usr/pkg/etc/xen/vif-bridge
+    #
+    # Script for configuring a vif in bridged mode with a dom0 interface.
+    # The xend(8) daemon calls a vif script when bringing a vif up or down.
+    # The script name to use is defined in /usr/pkg/etc/xen/xend-config.sxp
+    # in the ``vif-script'' field.
+    #
+    # Usage: vif-bridge up|down [var=value ...]
+    #
+    # Actions:
+    #    up		Adds the vif interface to the bridge.
+    #    down	Removes the vif interface from the bridge.
+    #
+    # Variables:
+    #    domain	name of the domain the interface is on (required).
+    #    vifq	vif interface name (required).
+    #    mac	vif MAC address (required).
+    #    bridge	bridge to add the vif to (required).
+    #
+    # Example invocation:
+    #
+    # vif-bridge up domain=VM1 vif=xvif1.0 mac="ee:14:01:d0:ec:af" bridge=bridge0
+    #
+    #============================================================================
+    
+    # Exit if anything goes wrong
+    set -e
+    
+    echo "vif-bridge $*"
+    
+    # Operation name.
+    OP=$1; shift
+    
+    # Pull variables in args into environment
+    for arg ; do export "${arg}" ; done
+    
+    # Required parameters. Fail if not set.
+    domain=${domain:?}
+    vif=${vif:?}
+    mac=${mac:?}
+    bridge=${bridge:?}
+    
+    # Optional parameters. Set defaults.
+    ip=${ip:-''}   # default to null (do nothing)
+    
+    # Are we going up or down?
+    case $OP in
+    up)	brcmd='add' ;;
+    down)	brcmd='delete' ;;
+    *)
+    	echo 'Invalid command: ' $OP
+    	echo 'Valid commands are: up, down'
+    	exit 1
+    	;;
+    esac
+    
+    # Don't do anything if the bridge is "null".
+    if [ "${bridge}" = "null" ] ; then
+    	exit
+    fi
+    
+    # Don't do anything if the bridge doesn't exist.
+    if ! ifconfig -l | grep "${bridge}" >/dev/null; then
+    	exit
+    fi
+    
+    # Add/remove vif to/from bridge.
+    ifconfig x${vif} $OP
+    brconfig ${bridge} ${brcmd} x${vif}  
+  
+Now, running  
+
+    xm create -c /usr/pkg/etc/xen/nbsd  
+  
+should create a domain and load a NetBSD kernel in it. 
+(Note:`-c` causes xm to connect to the domain's console once created.) 
+The kernel will try to find its root file system on xbd0 (i.e., wd0e) which hasn't been created yet. 
+wd0e will be seen as a disk device in the new domain, so it will be 'sub-partitioned'. 
+We could attach a ccd to wd0e in *domain0* and partition it, newfs and extract the NetBSD/i386 or amd64 tarballs there, but there's an easier way: load the netbsd-INSTALL\_XEN3\_DOMU kernel provided in the NetBSD binary sets. 
+Like other install kernels, it contains a ramdisk with sysinst, so you can install NetBSD using sysinst on your new domain.  
+  
+If you want to install NetBSD/Xen with a CDROM image, the following line should be used in the /usr/pkg/etc/xen/nbsd file:  
+
+    disk = [ 'phy:/dev/wd0e,0x1,w', 'phy:/dev/cd0a,0x2,r' ]  
+  
+After booting the domain, the option to install via CDROM may be selected. 
+The CDROM device should be changed to **xbd1d**.  
+  
+Once done installing, **halt -p** the new domain (don't reboot or halt, it would reload the INSTALL\_XEN3\_DOMU kernel even if you changed the config file), switch the config file back to the XEN3\_DOMU kernel, and start the new domain again. 
+Now it should be able to use **root on xbd0a** and you should have a second, functional NetBSD system on your xen installation.  
+  
+When the new domain is booting you'll see some warnings about *wscons* and the pseudo-terminals. These can be fixed by editing the files /etc/ttys and /etc/wscons.conf. 
+You must disable all terminals in /etc/ttys, except *console*, like this:  
+
+    console "/usr/libexec/getty Pc"         vt100   on secure
+    ttyE0   "/usr/libexec/getty Pc"         vt220   off secure
+    ttyE1   "/usr/libexec/getty Pc"         vt220   off secure
+    ttyE2   "/usr/libexec/getty Pc"         vt220   off secure
+    ttyE3   "/usr/libexec/getty Pc"         vt220   off secure  
+  
+Finally, all screens must be commented out from /etc/wscons.conf.  
+  
+It is also desirable to add  
+
+    powerd=YES  
+  
+in rc.conf. This way, the domain will be properly shut down if **xm shutdown -R** or **xm shutdown -H** is used on the domain0.  
+  
+Your domain should be now ready to work, enjoy.  
+  
+##Creating an unprivileged Linux domain (DomU)##
+Creating unprivileged Linux domains isn't much different from unprivileged NetBSD domains, but there are some details to know.  
+  
+First, the second parameter passed to the disk declaration (the '0x1' in the example below)  
+
+    disk = [ 'phy:/dev/wd0e,0x1,w' ]  
+  
+does matter to Linux. It wants a Linux device number here (e.g. 0x300 for hda). 
+Linux builds device numbers as: (major << 8 + minor). 
+So, hda1 which has major 3 and minor 1 on a Linux system will have device number 0x301. 
+Alternatively, devices names can be used (hda, hdb, ...) as xentools has a table to map these names to devices numbers.  
+  
+To export a partition to a Linux guest we can use:  
+
+    disk = [ 'phy:/dev/wd0e,0x300,w' ]
+    root = "/dev/hda1 ro"  
+  
+and it will appear as /dev/hda on the Linux system, and be used as root partition.  
+  
+To install the Linux system on the partition to be exported to the guest domain, the following method can be used: install sysutils/e2fsprogs from pkgsrc. 
+Use mke2fs to format the partition that will be the root partition of your Linux domain, and mount it. 
+Then copy the files from a working Linux system, make adjustments in /etc (fstab, network config). 
+It should also be possible to extract binary packages such as .rpm or .deb directly to the mounted partition using the appropriate tool, possibly running under NetBSD's Linux emulation. 
+Once the filesystem has been populated, umount it. 
+If desirable, the filesystem can be converted to ext3 using tune2fs -j. 
+It should now be possible to boot the Linux guest domain, using one of the vmlinuz-*-xenU kernels available in the Xen binary distribution.  
+  
+To get the linux console right, you need to add:  
+
+    extra = "xencons=tty1"  
+  
+to your configuration since not all linux distributions auto-attach a tty to the xen console.  
+
+##Creating an unprivileged Solaris domain (DomU)##
+Download an Opensolaris [release](http://opensolaris.org/os/downloads/) or [development snapshot](http://genunix.org/) DVD image. 
+Attach the DVD image to a vnd(4) device. Copy the kernel and ramdisk filesystem image to your dom0 filesystem.  
+
+    dom0# mkdir /root/solaris
+    dom0# vnconfig vnd0 osol-1002-124-x86.iso
+    dom0# mount /dev/vnd0a /mnt
+    
+    ## for a 64-bit guest
+    dom0# cp /mnt/boot/amd64/x86.microroot /root/solaris
+    dom0# cp /mnt/platform/i86xpv/kernel/amd64/unix /root/solaris
+    
+    ## for a 32-bit guest
+    dom0# cp /mnt/boot/x86.microroot /root/solaris
+    dom0# cp /mnt/platform/i86xpv/kernel/unix /root/solaris
+    
+    dom0# umount /mnt  
+  
+Keep the vnd(4) configured. For some reason the boot process stalls unless the DVD image is attached to the guest as a "phy" device. 
+Create an initial configuration file with the following contents. 
+Substitute */dev/wd0k* with an empty partition at least 8 GB large.  
+
+    memory = 640
+    name = 'solaris'
+    disk = [ 'phy:/dev/wd0k,0,w' ]
+    disk += [ 'phy:/dev/vnd0d,6:cdrom,r' ]
+    vif = [ 'bridge=bridge0' ]
+    kernel = '/root/solaris/unix'
+    ramdisk = '/root/solaris/x86.microroot'
+    # for a 64-bit guest
+    extra = '/platform/i86xpv/kernel/amd64/unix - nowin -B install_media=cdrom'
+    # for a 32-bit guest
+    #extra = '/platform/i86xpv/kernel/unix - nowin -B install_media=cdrom'  
+  
+Start the guest.  
+
+    dom0# xm create -c solaris.cfg
+    Started domain solaris
+                          v3.3.2 chgset 'unavailable'
+    SunOS Release 5.11 Version snv_124 64-bit
+    Copyright 1983-2009 Sun Microsystems, Inc.  All rights reserved.
+    Use is subject to license terms.
+    Hostname: opensolaris
+    Remounting root read/write
+    Probing for device nodes ...
+    WARNING: emlxs: ddi_modopen drv/fct failed: err 2
+    Preparing live image for use
+    Done mounting Live image  
+  
+Make sure the network is configured. 
+Note that it can take a minute for the xnf0 interface to appear.  
+
+    opensolaris console login: jack
+    Password: jack
+    Sun Microsystems Inc.   SunOS 5.11      snv_124 November 2008
+    jack@opensolaris:~$ pfexec sh
+    sh-3.2# ifconfig -a
+    sh-3.2# exit  
+  
+Set a password for VNC and start the VNC server which provides the X11 display where the installation program runs.  
+
+    jack@opensolaris:~$ vncpasswd
+    Password: solaris
+    Verify: solaris
+    jack@opensolaris:~$ cp .Xclients .vnc/xstartup
+    jack@opensolaris:~$ vncserver :1  
+  
+From a remote machine connect to the VNC server. 
+Use **ifconfig xnf0** on the guest to find the correct IP address to use.  
+
+    remote$ vncviewer 172.18.2.99:1  
+  
+It is also possible to launch the installation on a remote X11 display.  
+
+    jack@opensolaris:~$ export DISPLAY=172.18.1.1:0
+    jack@opensolaris:~$ pfexec gui-install  
+  
+After the GUI installation is complete you will be asked to reboot. 
+Before that you need to determine the ZFS ID for the new boot filesystem and update the configuration file accordingly. 
+Return to the guest console.  
+
+    jack@opensolaris:~$ pfexec zdb -vvv rpool | grep bootfs
+                    bootfs = 43
+    ^C
+    jack@opensolaris:~$  
+  
+The final configuration file should look like this. 
+Note in particular the last line.  
+
+    memory = 640
+    name = 'solaris'
+    disk = [ 'phy:/dev/wd0k,0,w' ]
+    vif = [ 'bridge=bridge0' ]
+    kernel = '/root/solaris/unix'
+    ramdisk = '/root/solaris/x86.microroot'
+    extra = '/platform/i86xpv/kernel/amd64/unix -B zfs-bootfs=rpool/43,bootpath="/xpvd/xdf@0:a"'  
+  
+Restart the guest to verify it works correctly.  
+
+    dom0# xm destroy solaris
+    dom0# xm create -c solaris.cfg
+    Using config file "./solaris.cfg".
+    v3.3.2 chgset 'unavailable'
+    Started domain solaris
+    SunOS Release 5.11 Version snv_124 64-bit
+    Copyright 1983-2009 Sun Microsystems, Inc.  All rights reserved.
+    Use is subject to license terms.
+    WARNING: emlxs: ddi_modopen drv/fct failed: err 2
+    Hostname: osol
+    Configuring devices.
+    Loading smf(5) service descriptions: 160/160
+    svccfg import warnings. See /var/svc/log/system-manifest-import:default.log .
+    Reading ZFS config: done.
+    Mounting ZFS filesystems: (6/6)
+    Creating new rsa public/private host key pair
+    Creating new dsa public/private host key pair
+    
+    osol console login:  
+
+##Using PCI devices in guest domains##
+The domain0 can give other domains access to selected PCI devices. 
+This can allow, for example, a non-privileged domain to have access to a physical network interface or disk controller. 
+However, keep in mind that giving a domain access to a PCI device most likely will give the domain read/write access to the whole physical memory, as PCs don't have an IOMMU to restrict memory access to DMA-capable device. 
+Also, it's not possible to export ISA devices to non-domain0 domains (which means that the primary VGA adapter can't be exported. 
+A guest domain trying to access the VGA registers will panic).  
+  
+This functionality is only available in NetBSD-5.1 (and later) domain0
+and domU. If the domain0 is NetBSD, it has to be running Xen 3.1, as
+support has not been ported to later versions at this time.  
+  
+For a PCI device to be exported to a domU, is has to be attached to the pciback driver in domain0. 
+Devices passed to the domain0 via the pciback.hide boot parameter will attach to pciback instead of the usual driver. 
+The list of devices is specified as (bus:dev.func), where bus and dev are 2-digit hexadecimal numbers, and func a single-digit number:  
+
+    pciback.hide=(00:0a.0)(00:06.0)  
+  
+pciback devices should show up in the domain0's boot messages, and the devices should be listed in the /kern/xen/pci directory.  
+  
+PCI devices to be exported to a domU are listed in the pci array of the domU's config file, with the format '0000:bus:dev.func'  
+
+    pci = [ '0000:00:06.0', '0000:00:0a.0' ]  
+  
+In the domU an xpci device will show up, to which one or more pci busses will attach. 
+Then the PCI drivers will attach to PCI busses as usual. 
+Note that the default NetBSD DOMU kernels do not have xpci or any PCI drivers built in by default; you have to build your own kernel to use PCI devices in a domU. 
+Here's a kernel config example:  
+
+    include         "arch/i386/conf/XEN3_DOMU"
+    #include         "arch/i386/conf/XENU"           # in NetBSD 3.0
+    
+    # Add support for PCI busses to the XEN3_DOMU kernel
+    xpci* at xenbus ?
+    pci* at xpci ?
+    
+    # Now add PCI and related devices to be used by this domain
+    # USB Controller and Devices
+    
+    # PCI USB controllers
+    uhci*   at pci? dev ? function ?        # Universal Host Controller (Intel)
+    
+    # USB bus support
+    usb*    at uhci?
+    
+    # USB Hubs
+    uhub*   at usb?
+    uhub*   at uhub? port ? configuration ? interface ?
+    
+    # USB Mass Storage
+    umass*  at uhub? port ? configuration ? interface ?
+    wd*     at umass?
+    # SCSI controllers
+    ahc*    at pci? dev ? function ?        # Adaptec [23]94x, aic78x0 SCSI
+    
+    # SCSI bus support (for both ahc and umass)
+    scsibus* at scsi?
+    
+    # SCSI devices
+    sd*     at scsibus? target ? lun ?      # SCSI disk drives
+    cd*     at scsibus? target ? lun ?      # SCSI CD-ROM drives  
+
+##Links and further information##
+* The HowTo on [Installing into RAID-1](http://mail-index.NetBSD.org/port-xen/2006/03/01/0010.html) gives some hints on using Xen (grub) with NetBSD's RAIDframe  
+* Harold Gutch wrote documentation on [setting up a Linux DomU with a NetBSD Dom0](http://www.gutch.de/NetBSD/docs/xen.html)  
+* An example of how to use NetBSD's native bootloader to load NetBSD/Xen instead of Grub can be found in the i386/amd64 boot(8) and boot.cfg(5) manpages.  
